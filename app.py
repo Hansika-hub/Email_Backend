@@ -4,9 +4,12 @@ from extractor import extract_event_entities
 from flask_cors import CORS
 import os
 
+from google.oauth2.credentials import Credentials
+from googleapiclient.discovery import build
+
 app = Flask(__name__)
-app.secret_key = "super_secret"
-CORS(app)  # Allow frontend to call API
+app.secret_key = "super_secret"  # Secure this in production
+CORS(app)
 
 # Dummy in-memory DB
 all_events = []
@@ -25,9 +28,6 @@ def authenticate():
 
 @app.route("/fetch_emails", methods=["GET"])
 def fetch_emails():
-    from google.oauth2.credentials import Credentials
-    from googleapiclient.discovery import build
-
     access_token = session.get("access_token")
     if not access_token:
         return jsonify({"error": "Not authenticated"}), 401
@@ -53,9 +53,6 @@ def fetch_emails():
 
 @app.route("/process_emails", methods=["POST"])
 def process_email():
-    from google.oauth2.credentials import Credentials
-    from googleapiclient.discovery import build
-
     data = request.get_json()
     email_id = data.get("emailId")
 
@@ -71,15 +68,12 @@ def process_email():
 
     result = extract_event_entities(snippet)
     if sum(1 for v in result.values() if v.strip()) >= 3:
-        result["attendees"] = 1  # Dummy for now
+        result["attendees"] = 1
         all_events.append(result)
         return jsonify([result])
 
     return jsonify([])
 
-if __name__ == "__main__":
-    app.run(debug=True)
+# ✅ Only ONE __main__ block with correct port binding for Render
 if __name__ == '__main__':
-    import os
-    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)), debug=True)
-
+    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
