@@ -1,13 +1,10 @@
 import torch
 from transformers import AutoTokenizer, AutoModelForTokenClassification
-from pathlib import Path
+from transformers import AutoTokenizer, AutoModelForTokenClassification
 
-# ✅ Define the local model path (adjust if needed)
-model_path = Path(r"C:\Users\DELL\OneDrive\Desktop\Thambu\EEE_website\checkpoint-3546").resolve()
-
-# ✅ Load tokenizer and model from local folder
-tokenizer = AutoTokenizer.from_pretrained(model_path)
-model = AutoModelForTokenClassification.from_pretrained(model_path)
+model_name = "Thiyaga158/Distilbert_Ner_Model_For_Email_Event_Extraction"
+tokenizer = AutoTokenizer.from_pretrained(model_name)
+model = AutoModelForTokenClassification.from_pretrained(model_name)
 
 # ✅ Move model to CPU or GPU
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
