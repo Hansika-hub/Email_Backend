@@ -6,24 +6,38 @@ import os
 
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
+from google.oauth2 import id_token
+from google.auth.transport import requests as google_requests
 
-app = Flask(__name__)
-app.secret_key = "super_secret"  # Secure this in production
+app = Flask(__name__)  # ✅ fixed
+app.secret_key = "super_secret"
 CORS(app)
 
-# Dummy in-memory DB
 all_events = []
 
 @app.route("/", methods=["POST"])
 def authenticate():
     data = request.get_json()
-    access_token = data.get("accessToken")
+    id_token_str = data.get("accessToken")
 
-    if not access_token:
-        return jsonify({"error": "Missing access token"}), 400
+    if not id_token_str:
+        return jsonify({"error": "Missing ID token"}), 400
 
-    session["access_token"] = access_token
-    return jsonify({"status": "authenticated"}), 200
+    try:
+        idinfo = id_token.verify_oauth2_token(
+            id_token_str,
+            google_requests.Request(),
+            "721040422695-9m0ge0d19gqaha28rse2le19ghran03u.apps.googleusercontent.com"
+        )
+
+        session["email"] = idinfo["email"]
+        session["access_token"] = id_token_str
+
+        return jsonify({"status": "authenticated", "user": idinfo["email"]}), 200
+
+    except Exception as e:
+        print("❌ Token verification error:", str(e))
+        return jsonify({"error": "Token verification failed"}), 400
 
 
 @app.route("/fetch_emails", methods=["GET"])
@@ -74,6 +88,7 @@ def process_email():
 
     return jsonify([])
 
-# ✅ Only ONE __main__ block with correct port binding for Render
+
+# ✅ Correct main block
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
