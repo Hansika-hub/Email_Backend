@@ -11,7 +11,7 @@ from google.auth.transport import requests as google_requests
 
 app = Flask(__name__)  # ✅ fixed
 app.secret_key = "super_secret"
-CORS(app)
+CORS(app, origins=["https://email-mu-eight.vercel.app"], supports_credentials=True)
 
 all_events = []
 
