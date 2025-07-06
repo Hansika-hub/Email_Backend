@@ -3,7 +3,7 @@ from gmail_utils import get_gmail_service
 from extractor import extract_event_entities
 from flask_cors import CORS
 import os
-
+from db_utils import save_to_db
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from google.oauth2 import id_token
