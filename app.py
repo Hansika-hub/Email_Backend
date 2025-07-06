@@ -31,9 +31,12 @@ def authenticate():
         )
 
         session["email"] = idinfo["email"]
-        session["access_token"] = id_token_str
 
-        return jsonify({"status": "authenticated", "user": idinfo["email"]}), 200
+        return jsonify({
+            "status": "authenticated",
+            "user": idinfo["email"],
+            "accessToken": id_token_str
+        }), 200
 
     except Exception as e:
         print("❌ Token verification error:", str(e))
@@ -42,9 +45,10 @@ def authenticate():
 
 @app.route("/fetch_emails", methods=["GET"])
 def fetch_emails():
-    access_token = session.get("access_token")
-    if not access_token:
-        return jsonify({"error": "Not authenticated"}), 401
+    auth_header = request.headers.get("Authorization", "")
+    if not auth_header.startswith("Bearer "):
+        return jsonify({"error": "Unauthorized"}), 401
+    access_token = auth_header.split(" ")[1]
 
     creds = Credentials(token=access_token)
     service = build("gmail", "v1", credentials=creds)
@@ -70,9 +74,13 @@ def process_email():
     data = request.get_json()
     email_id = data.get("emailId")
 
-    access_token = session.get("access_token")
-    if not access_token or not email_id:
-        return jsonify({"error": "Missing token or email ID"}), 400
+    auth_header = request.headers.get("Authorization", "")
+    if not auth_header.startswith("Bearer "):
+        return jsonify({"error": "Unauthorized"}), 401
+    access_token = auth_header.split(" ")[1]
+
+    if not email_id:
+        return jsonify({"error": "Missing email ID"}), 400
 
     creds = Credentials(token=access_token)
     service = build("gmail", "v1", credentials=creds)
@@ -84,9 +92,16 @@ def process_email():
     if sum(1 for v in result.values() if v.strip()) >= 3:
         result["attendees"] = 1
         all_events.append(result)
+        save_to_db(result)  # ✅ Save to DB
         return jsonify([result])
 
     return jsonify([])
+
+@app.route("/cleanup_reminders", methods=["POST"])
+def cleanup():
+    from db_utils import delete_expired_events
+    deleted = delete_expired_events()
+    return jsonify({"deleted": deleted})
 
 
 # ✅ Correct main block
