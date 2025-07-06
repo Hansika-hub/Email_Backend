@@ -18,7 +18,7 @@ all_events = []
 @app.route("/", methods=["POST"])
 def authenticate():
     data = request.get_json()
-    id_token_str = data.get("accessToken")
+    id_token_str = data.get("token")
 
     if not id_token_str:
         return jsonify({"error": "Missing ID token"}), 400
