@@ -1,3 +1,5 @@
+# ✅ app.py (updated to use cleaned content and full email body)
+
 from flask import Flask, redirect, request, jsonify, session
 from gmail_utils import get_gmail_service
 from extractor import extract_event_entities
@@ -8,28 +10,27 @@ from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from google.oauth2 import id_token
 from google.auth.transport import requests as google_requests
+from bs4 import BeautifulSoup
+import base64
+import re
 
 app = Flask(__name__)
 app.secret_key = "super_secret"
 
-# ✅ Secure session settings (if ever needed)
 app.config.update(
     SESSION_COOKIE_SECURE=True,
     SESSION_COOKIE_HTTPONLY=True,
     SESSION_COOKIE_SAMESITE='None'
 )
 
-# ✅ CORS config for Vercel
 CORS(app, supports_credentials=True, origins=["https://email-mu-eight.vercel.app"])
 
 all_events = []
 
-# ✅ Optional: Block non-JSON POST requests
 @app.before_request
 def block_non_json_post():
     if request.method == 'POST' and not request.is_json:
         return jsonify({"error": "Only JSON POST requests allowed"}), 415
-
 
 @app.route("/", methods=["POST"])
 def authenticate():
@@ -45,9 +46,7 @@ def authenticate():
             google_requests.Request(),
             "721040422695-9m0ge0d19gqaha28rse2le19ghran03u.apps.googleusercontent.com"
         )
-
         session["email"] = idinfo["email"]
-
         return jsonify({
             "status": "authenticated",
             "user": idinfo["email"],
@@ -57,7 +56,6 @@ def authenticate():
     except Exception as e:
         print("❌ Token verification error:", str(e))
         return jsonify({"error": "Token verification failed"}), 400
-
 
 @app.route("/fetch_emails", methods=["GET"])
 def fetch_emails():
@@ -89,7 +87,6 @@ def fetch_emails():
         print("📡 Gmail API error:", str(e))
         return jsonify({"error": "Failed to fetch emails from Gmail"}), 500
 
-
 @app.route("/process_emails", methods=["POST"])
 def process_email():
     data = request.get_json()
@@ -109,9 +106,24 @@ def process_email():
         service = build("gmail", "v1", credentials=creds)
 
         msg_detail = service.users().messages().get(userId="me", id=email_id, format='full').execute()
-        snippet = msg_detail.get("snippet", "")
+        payload = msg_detail.get("payload", {})
 
-        result = extract_event_entities(snippet)
+        # ✅ Extract full body
+        def get_body(part):
+            if part.get("mimeType") == "text/plain" or part.get("mimeType") == "text/html":
+                data = part.get("body", {}).get("data")
+                if data:
+                    return base64.urlsafe_b64decode(data).decode("utf-8", errors="ignore")
+            elif "parts" in part:
+                for p in part["parts"]:
+                    content = get_body(p)
+                    if content:
+                        return content
+            return ""
+
+        body = get_body(payload)
+        result = extract_event_entities(body)
+
         if sum(1 for v in result.values() if v.strip()) >= 3:
             result["attendees"] = 1
             all_events.append(result)
@@ -124,14 +136,11 @@ def process_email():
         print("📡 Gmail API error:", str(e))
         return jsonify({"error": "Failed to process email"}), 500
 
-
 @app.route("/cleanup_reminders", methods=["POST"])
 def cleanup():
     from db_utils import delete_expired_events
     deleted = delete_expired_events()
     return jsonify({"deleted": deleted})
 
-
-# ✅ Main runner
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
