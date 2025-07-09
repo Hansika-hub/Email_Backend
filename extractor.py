@@ -4,13 +4,16 @@ import os
 import re
 from bs4 import BeautifulSoup
 import base64
+from email_reply_parser import EmailReplyParser
 
+# ✅ Load model and tokenizer
 model_name = "Thiyaga158/Distilbert_Ner_Model_For_Email_Event_Extraction"
 cache_dir = os.getenv("TRANSFORMERS_CACHE", "/tmp/cache")
 
 tokenizer = AutoTokenizer.from_pretrained(model_name, cache_dir=cache_dir)
 model = AutoModelForTokenClassification.from_pretrained(model_name, cache_dir=cache_dir)
 
+# ✅ Device setup
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"Device set to: {device}")
 model.to(device)
@@ -18,34 +21,41 @@ model.eval()
 
 id2label = model.config.id2label
 
-def clean_token(token):
+def clean_token(token: str) -> str:
     return token.replace("##", "")
 
-def clean_email_content(raw_email_body: str) -> str:
-    # Step 1: Convert HTML to plain text if needed
-    cleaned = BeautifulSoup(raw_email_body, "html.parser").get_text()
+# ✅ Step 1: Strip replies and forwarded content
 
-    # Step 2: Collapse whitespace
-    cleaned = re.sub(r"\n{2,}", "\n", cleaned)
-    cleaned = re.sub(r"\s{2,}", " ", cleaned)
+def extract_sender_message(raw_email: str) -> str:
+    # Remove quoted replies/forwards using email-reply-parser
+    text = EmailReplyParser.parse_reply(raw_email)
 
-    # Step 3: Soft-trim disclaimers/footers (without cutting vital info)
-    disclaimer_keywords = [
-        "DISCLAIMER", "This email is confidential", 
-        "On .* wrote:", "Sent from my", "Regards,", "Thanks,"
+    # Remove standard forwarded headers (for extra safety)
+    forward_patterns = [
+        r"-{2,}\s*forwarded message\s*-{2,}",
+        r"from:.*@.*", r"sent:.*", r"subject:.*", r"to:.*"
     ]
-    pattern = re.compile("|".join(disclaimer_keywords), re.IGNORECASE)
+    forward_re = re.compile("|".join(forward_patterns), re.IGNORECASE)
+    text = re.split(forward_re, text)[0]
 
-    split_body = re.split(pattern, cleaned)
-    if len(split_body[0].split()) >= 50:  # Keep only if main body is long
-        return split_body[0].strip()
+    return text.strip()
 
-    return cleaned.strip()
+# ✅ Step 2: Clean HTML, collapse whitespace
 
-# ✅ Main extraction function
+def clean_email_content(raw_email_body: str) -> str:
+    # Convert HTML to plain text
+    plain = BeautifulSoup(raw_email_body, "html.parser").get_text()
+
+    # Normalize whitespace
+    plain = re.sub(r"\n{2,}", "\n", plain)
+    plain = re.sub(r"\s{2,}", " ", plain)
+
+    return plain.strip()
+
+# ✅ Step 3: Run NER to extract event info
+
 def extract_event_entities(text: str):
-    cleaned_text = clean_email_content(text)
-    words = cleaned_text.split()
+    words = text.split()
     encoding = tokenizer(words, is_split_into_words=True, return_tensors="pt", truncation=True, padding=True)
 
     input_ids = encoding["input_ids"].to(device)
@@ -62,12 +72,9 @@ def extract_event_entities(text: str):
 
     for token, label in zip(tokens, labels):
         label = label.lower()
-
         if token in ["[CLS]", "[SEP]", "[PAD]"]:
             continue
-
         token = clean_token(token)
-
         if "event" in label:
             result["event_name"] += token + " "
         elif "date" in label:
@@ -79,21 +86,33 @@ def extract_event_entities(text: str):
 
     return {k: v.strip() for k, v in result.items()}
 
-if __name__ == "__main__":   
-    encoded_email = base64.urlsafe_b64encode(b"""
+# ✅ Final callable method
+def extract_cleaned_event(raw_email_base64: str) -> dict:
+    try:
+        decoded_email = base64.urlsafe_b64decode(raw_email_base64).decode("utf-8", errors="ignore")
+        sender_text_only = extract_sender_message(decoded_email)
+        cleaned_text = clean_email_content(sender_text_only)
+        return extract_event_entities(cleaned_text)
+    except Exception as e:
+        print("❌ Extraction error:", str(e))
+        return {"event_name": "", "date": "", "time": "", "venue": ""}
+
+# ✅ Test
+if __name__ == "__main__":
+    example_email = base64.urlsafe_b64encode(b"""
     <html>
     <body>
-    <h2>Hackathon 2025 Announcement</h2>
-    <p>Join us on 8 October 2026 at 10:00 AM in Tech Auditorium for the most awaited Hackathon event.</p>
-    <p>Best regards,<br>Organizing Team</p>
+    <p>Dear SPOC,</p>
+    <p>We invite you to the NPTEL Workshop on Ansys Maxwell on 9 August 2025 at 10:00 AM in Seminar Hall 3, IIT Madras.</p>
+    <p>Best regards,<br>NPTEL Team</p>
+    <p>::Disclaimer:: This message is confidential.</p>
+    <br><br>---------- Forwarded message ----------
+    From: ...
     </body>
     </html>
     """).decode("utf-8")
 
-    # Decode and extract
-    decoded_email = base64.urlsafe_b64decode(encoded_email).decode("utf-8")
-    output = extract_event_entities(decoded_email)
-
-    print("\n🧠 Extracted Event Details:")
-    for key, value in output.items():
-        print(f"{key:12}: {value}")
+    print("🧪 Testing email extraction:")
+    results = extract_cleaned_event(example_email)
+    for k, v in results.items():
+        print(f"{k:12}: {v}")
