@@ -1,204 +1,100 @@
-// Sidebar toggle
-function toggleSidebar() {
-  document.getElementById('sidebar').classList.toggle('open');
-  document.getElementById('overlay').classList.toggle('show');
-}
+import torch
+from transformers import AutoTokenizer, AutoModelForTokenClassification
+import os
+import re
+from bs4 import BeautifulSoup
+import base64
 
-const BACKEND_URL = "https://email-backend-bu9l.onrender.com";
-let accessToken = null;
+model_name = "Thiyaga158/Distilbert_Ner_Model_For_Email_Event_Extraction"
+cache_dir = os.getenv("TRANSFORMERS_CACHE", "/tmp/cache")
 
-// Handle login success
-function handleCredentialResponse(response) {
-  const idToken = response.credential;
+tokenizer = AutoTokenizer.from_pretrained(model_name, cache_dir=cache_dir)
+model = AutoModelForTokenClassification.from_pretrained(model_name, cache_dir=cache_dir)
 
-  fetch(`${BACKEND_URL}/`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ token: idToken }),
-  })
-    .then((res) => {
-      if (!res.ok) throw new Error("ID token verification failed");
-      return res.json();
-    })
-    .then(() => {
-      google.accounts.oauth2.initTokenClient({
-        client_id: "721040422695-9m0ge0d19gqaha28rse2le19ghran03u.apps.googleusercontent.com",
-        scope: "https://www.googleapis.com/auth/gmail.readonly",
-        callback: (tokenResponse) => {
-          if (tokenResponse.error) throw new Error("Access token error");
-          accessToken = tokenResponse.access_token;
-          fetchEmails();
-        },
-      }).requestAccessToken();
-    })
-    .catch((err) => {
-      console.error("Login failed:", err);
-      const errBox = document.getElementById("email-error");
-      errBox.style.display = "block";
-      errBox.textContent = "Login failed. Try again.";
-    });
-}
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+print(f"Device set to: {device}")
+model.to(device)
+model.eval()
 
-// Fetch Emails
-async function fetchEmails() {
-  const emailList = document.getElementById("email-list");
-  const emailLoading = document.getElementById("email-loading");
-  const emailError = document.getElementById("email-error");
+id2label = model.config.id2label
 
-  emailLoading.style.display = "block";
-  emailError.style.display = "none";
+def clean_token(token):
+    return token.replace("##", "")
 
-  try {
-    const res = await fetch(`${BACKEND_URL}/fetch_emails`, {
-      headers: { Authorization: `Bearer ${accessToken}` },
-    });
+def clean_email_content(raw_email_body: str) -> str:
+    # Step 1: Convert HTML to plain text if needed
+    cleaned = BeautifulSoup(raw_email_body, "html.parser").get_text()
 
-    if (!res.ok) throw new Error("Email fetch failed");
+    # Step 2: Collapse whitespace
+    cleaned = re.sub(r"\n{2,}", "\n", cleaned)
+    cleaned = re.sub(r"\s{2,}", " ", cleaned)
 
-    const emails = await res.json();
-    emailList.innerHTML = "";
+    # Step 3: Soft-trim disclaimers/footers (without cutting vital info)
+    disclaimer_keywords = [
+        "DISCLAIMER", "This email is confidential", 
+        "On .* wrote:", "Sent from my", "Regards,", "Thanks,"
+    ]
+    pattern = re.compile("|".join(disclaimer_keywords), re.IGNORECASE)
 
-    emails.forEach((email) => {
-      const div = document.createElement("div");
-      div.className = "email-item";
-      div.textContent = email.subject || "No Subject";
-      div.addEventListener("click", () => fetchEvents(email.id));
-      emailList.appendChild(div);
-    });
-  } catch (err) {
-    console.error(err);
-    emailError.style.display = "block";
-    emailError.textContent = "Failed to fetch emails.";
-  } finally {
-    emailLoading.style.display = "none";
-  }
-}
+    split_body = re.split(pattern, cleaned)
+    if len(split_body[0].split()) >= 50:  # Keep only if main body is long
+        return split_body[0].strip()
 
-// Extract events
-async function fetchEvents(emailId) {
-  const eventsList = document.getElementById("events-list");
-  const eventsLoading = document.getElementById("events-loading");
-  const eventsError = document.getElementById("events-error");
+    return cleaned.strip()
 
-  eventsLoading.style.display = "block";
-  eventsError.style.display = "none";
+# ✅ Main extraction function
+def extract_event_entities(text: str):
+    cleaned_text = clean_email_content(text)
+    words = cleaned_text.split()
+    encoding = tokenizer(words, is_split_into_words=True, return_tensors="pt", truncation=True, padding=True)
 
-  try {
-    const res = await fetch(`${BACKEND_URL}/process_emails`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${accessToken}`,
-      },
-      body: JSON.stringify({ emailId }),
-    });
+    input_ids = encoding["input_ids"].to(device)
+    attention_mask = encoding["attention_mask"].to(device)
 
-    if (!res.ok) throw new Error("Event extraction failed");
+    with torch.no_grad():
+        outputs = model(input_ids=input_ids, attention_mask=attention_mask)
 
-    const events = await res.json();
-    console.log("✅ Extracted Events:", events);  // Debug log
-    eventsList.innerHTML = "";
+    predictions = torch.argmax(outputs.logits, dim=2)[0]
+    tokens = tokenizer.convert_ids_to_tokens(input_ids[0])
+    labels = [id2label[p.item()] for p in predictions]
 
-    if (!Array.isArray(events) || events.length === 0) {
-      eventsError.style.display = "block";
-      eventsError.textContent = "No events found for this email.";
-      return;
-    }
+    result = {"event_name": "", "date": "", "time": "", "venue": ""}
 
-    events.forEach((event) => {
-      // Handle case where nothing was extracted
-      if (!event.event_name && !event.date && !event.time && !event.venue) return;
+    for token, label in zip(tokens, labels):
+        label = label.lower()
 
-      const card = document.createElement("div");
-      card.className = "card";
-      card.innerHTML = `
-        <div style="color: #8b5cf6; font-weight: bold;">${event.type || 'Event'}</div>
-        <h2>${event.event_name || 'No Title'}</h2>
-        <p>📅 ${event.date || 'N/A'}</p>
-        <p>⏰ ${event.time || 'N/A'}</p>
-        <p>📍 ${event.venue || 'N/A'}</p>
-      `;
-      eventsList.appendChild(card);
-    });
+        if token in ["[CLS]", "[SEP]", "[PAD]"]:
+            continue
 
-    updateSummary(events);
-  } catch (err) {
-    console.error(err);
-    eventsError.style.display = "block";
-    eventsError.textContent = "No events found for this email.";
-  } finally {
-    eventsLoading.style.display = "none";
-  }
-}
+        token = clean_token(token)
 
-// Summary updater
-function updateSummary(events) {
-  const total = events.length;
-  const today = new Date();
-  const weekStart = new Date(today);
-  weekStart.setDate(today.getDate() - today.getDay());
-  const weekEnd = new Date(weekStart);
-  weekEnd.setDate(weekStart.getDate() + 6);
+        if "event" in label:
+            result["event_name"] += token + " "
+        elif "date" in label:
+            result["date"] += token + " "
+        elif "time" in label:
+            result["time"] += token + " "
+        elif "venue" in label:
+            result["venue"] += token + " "
 
-  const thisWeek = events.filter((ev) => {
-    const dt = new Date(ev.date);
-    return dt >= weekStart && dt <= weekEnd;
-  }).length;
+    return {k: v.strip() for k, v in result.items()}
 
-  const attendees = events.reduce((sum, ev) => sum + (parseInt(ev.attendees) || 0), 0);
+if _name_ == "_main_":
+    # Simulate Gmail API response
+    encoded_email = base64.urlsafe_b64encode(b"""
+    <html>
+    <body>
+    <h2>Hackathon 2025 Announcement</h2>
+    <p>Join us on 8 October 2026 at 10:00 AM in Tech Auditorium for the most awaited Hackathon event.</p>
+    <p>Best regards,<br>Organizing Team</p>
+    </body>
+    </html>
+    """).decode("utf-8")
 
-  document.getElementById("total-events").textContent = total;
-  document.getElementById("this-week-events").textContent = thisWeek;
-  document.getElementById("total-attendees").textContent = attendees;
-  document.getElementById("upcoming-count").textContent = total;
-  document.getElementById("attended-count").textContent = 0;
-  document.getElementById("missed-count").textContent = 0;
-}
+    # Decode and extract
+    decoded_email = base64.urlsafe_b64decode(encoded_email).decode("utf-8")
+    output = extract_event_entities(decoded_email)
 
-// Search
-function setupSearch() {
-  const input = document.getElementById("search-events");
-  input.addEventListener("input", (e) => {
-    const val = e.target.value.toLowerCase();
-    const cards = document.querySelectorAll(".events .card");
-    cards.forEach((c) => {
-      const title = c.querySelector("h2").textContent.toLowerCase();
-      c.style.display = title.includes(val) ? "block" : "none";
-    });
-  });
-}
-
-// Init
-window.onload = function () {
-  setupSearch();
-
-  try {
-    google.accounts.id.initialize({
-      client_id: "721040422695-9m0ge0d19gqaha28rse2le19ghran03u.apps.googleusercontent.com",
-      callback: handleCredentialResponse,
-      auto_select: false,
-      cancel_on_tap_outside: true,
-      itp_support: true,
-    });
-
-    const loginButton = document.getElementById("login-button");
-    if (!loginButton) {
-      console.error("Login button element not found");
-      document.getElementById("email-error").style.display = "block";
-      document.getElementById("email-error").textContent = "Login button not found.";
-      return;
-    }
-
-    google.accounts.id.renderButton(loginButton, {
-      theme: "outline",
-      size: "large",
-      width: 300,
-    });
-
-    google.accounts.id.prompt();
-  } catch (err) {
-    console.error("GSI Initialization failed:", err);
-    document.getElementById("email-error").style.display = "block";
-    document.getElementById("email-error").textContent = "Google Sign-In init failed.";
-  }
-};
+    print("\n🧠 Extracted Event Details:")
+    for key, value in output.items():
+        print(f"{key:12}: {value}")
