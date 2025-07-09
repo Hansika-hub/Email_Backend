@@ -79,8 +79,7 @@ def extract_event_entities(text: str):
 
     return {k: v.strip() for k, v in result.items()}
 
-if _name_ == "_main_":
-    # Simulate Gmail API response
+if __name__ == "__main__":   
     encoded_email = base64.urlsafe_b64encode(b"""
     <html>
     <body>
