@@ -92,6 +92,7 @@ def fetch_emails():
 
 @app.route("/process_emails", methods=["POST"])
 def process_email():
+    from extractor import clean_email_content  # ensure this is imported
     data = request.get_json()
     email_id = data.get("emailId")
 
@@ -109,9 +110,25 @@ def process_email():
         service = build("gmail", "v1", credentials=creds)
 
         msg_detail = service.users().messages().get(userId="me", id=email_id, format='full').execute()
-        snippet = msg_detail.get("snippet", "")
+        payload = msg_detail.get("payload", {})
+        parts = payload.get("parts", [])
 
-        result = extract_event_entities(snippet)
+        body = ""
+        for part in parts:
+            if part.get("mimeType") == "text/html":
+                body = part["body"].get("data", "")
+                break
+            elif part.get("mimeType") == "text/plain":
+                body = part["body"].get("data", "")
+
+        if not body:
+            return jsonify({"error": "Email body is empty"}), 400
+
+        import base64
+        decoded_email = base64.urlsafe_b64decode(body).decode("utf-8", errors="ignore")
+        clean_text = clean_email_content(decoded_email)
+
+        result = extract_event_entities(clean_text)
         if sum(1 for v in result.values() if v.strip()) >= 3:
             result["attendees"] = 1
             all_events.append(result)
@@ -123,6 +140,7 @@ def process_email():
     except Exception as e:
         print("📡 Gmail API error:", str(e))
         return jsonify({"error": "Failed to process email"}), 500
+
 
 
 @app.route("/cleanup_reminders", methods=["POST"])
