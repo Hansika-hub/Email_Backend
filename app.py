@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify, session
+from flask import Flask, redirect, request, jsonify, session
 from gmail_utils import get_gmail_service
 from extractor import extract_event_entities
 from flask_cors import CORS
@@ -8,27 +8,28 @@ from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from google.oauth2 import id_token
 from google.auth.transport import requests as google_requests
-from bs4 import BeautifulSoup
-import re
-from base64 import urlsafe_b64decode
 
 app = Flask(__name__)
 app.secret_key = "super_secret"
 
+# ✅ Secure session settings (if ever needed)
 app.config.update(
     SESSION_COOKIE_SECURE=True,
     SESSION_COOKIE_HTTPONLY=True,
     SESSION_COOKIE_SAMESITE='None'
 )
 
+# ✅ CORS config for Vercel
 CORS(app, supports_credentials=True, origins=["https://email-mu-eight.vercel.app"])
 
 all_events = []
 
+# ✅ Optional: Block non-JSON POST requests
 @app.before_request
 def block_non_json_post():
     if request.method == 'POST' and not request.is_json:
         return jsonify({"error": "Only JSON POST requests allowed"}), 415
+
 
 @app.route("/", methods=["POST"])
 def authenticate():
@@ -44,7 +45,9 @@ def authenticate():
             google_requests.Request(),
             "721040422695-9m0ge0d19gqaha28rse2le19ghran03u.apps.googleusercontent.com"
         )
+
         session["email"] = idinfo["email"]
+
         return jsonify({
             "status": "authenticated",
             "user": idinfo["email"],
@@ -87,14 +90,6 @@ def fetch_emails():
         return jsonify({"error": "Failed to fetch emails from Gmail"}), 500
 
 
-# ✅ Email cleaning function
-def clean_email_content(raw_html):
-    soup = BeautifulSoup(raw_html, "html.parser")
-    text = soup.get_text()
-    # Remove disclaimers, signatures, replies, etc.
-    text = re.split(r"(Disclaimer:|This email is confidential|Regards,|Thanks,|On .+ wrote:)", text)[0]
-    return text.strip()
-
 @app.route("/process_emails", methods=["POST"])
 def process_email():
     data = request.get_json()
@@ -114,27 +109,9 @@ def process_email():
         service = build("gmail", "v1", credentials=creds)
 
         msg_detail = service.users().messages().get(userId="me", id=email_id, format='full').execute()
-        payload = msg_detail.get("payload", {})
-        parts = payload.get("parts", [])
+        snippet = msg_detail.get("snippet", "")
 
-        body = ""
-
-        # ✅ Loop through parts and decode email body
-        for part in parts:
-            mime_type = part.get("mimeType", "")
-            data = part.get("body", {}).get("data", "")
-
-            if data and mime_type in ["text/plain", "text/html"]:
-                decoded = urlsafe_b64decode(data).decode("utf-8", errors="ignore")
-                body += decoded
-
-        # ✅ Fallback to snippet if body empty
-        if not body:
-            body = msg_detail.get("snippet", "")
-
-        cleaned = clean_email_content(body)
-        result = extract_event_entities(cleaned)
-
+        result = extract_event_entities(snippet)
         if sum(1 for v in result.values() if v.strip()) >= 3:
             result["attendees"] = 1
             all_events.append(result)
@@ -155,5 +132,6 @@ def cleanup():
     return jsonify({"deleted": deleted})
 
 
+# ✅ Main runner
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
