@@ -126,8 +126,7 @@ def process_email():
             return jsonify({"error": "Email body is empty"}), 400
 
         decoded_email = base64.urlsafe_b64decode(body).decode("utf-8", errors="ignore")
-        clean_text = clean_email_content(decoded_email)
-        result = extract_event_entities(clean_text)
+        result = extract_cleaned_event(decoded_email)  # ✅ Cleaner logic
 
         if sum(1 for v in result.values() if v.strip()) >= 3:
             result["attendees"] = 1
