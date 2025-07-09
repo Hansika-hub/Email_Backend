@@ -1,67 +1,204 @@
-import torch
-from transformers import AutoTokenizer, AutoModelForTokenClassification
-import os
+// Sidebar toggle
+function toggleSidebar() {
+  document.getElementById('sidebar').classList.toggle('open');
+  document.getElementById('overlay').classList.toggle('show');
+}
 
-# ✅ Load model and tokenizer from Hugging Face
-model_name = "Thiyaga158/Distilbert_Ner_Model_For_Email_Event_Extraction"
-cache_dir = os.getenv("TRANSFORMERS_CACHE", "/tmp/cache")
+const BACKEND_URL = "https://email-backend-bu9l.onrender.com";
+let accessToken = null;
 
-tokenizer = AutoTokenizer.from_pretrained(model_name, cache_dir=cache_dir)
-model = AutoModelForTokenClassification.from_pretrained(model_name, cache_dir=cache_dir)
+// Handle login success
+function handleCredentialResponse(response) {
+  const idToken = response.credential;
 
-# ✅ Device config
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-print(f"✅ Device set to: {device}")
-model.to(device)
-model.eval()
+  fetch(`${BACKEND_URL}/`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ token: idToken }),
+  })
+    .then((res) => {
+      if (!res.ok) throw new Error("ID token verification failed");
+      return res.json();
+    })
+    .then(() => {
+      google.accounts.oauth2.initTokenClient({
+        client_id: "721040422695-9m0ge0d19gqaha28rse2le19ghran03u.apps.googleusercontent.com",
+        scope: "https://www.googleapis.com/auth/gmail.readonly",
+        callback: (tokenResponse) => {
+          if (tokenResponse.error) throw new Error("Access token error");
+          accessToken = tokenResponse.access_token;
+          fetchEmails();
+        },
+      }).requestAccessToken();
+    })
+    .catch((err) => {
+      console.error("Login failed:", err);
+      const errBox = document.getElementById("email-error");
+      errBox.style.display = "block";
+      errBox.textContent = "Login failed. Try again.";
+    });
+}
 
-# ✅ Get label map
-id2label = model.config.id2label
+// Fetch Emails
+async function fetchEmails() {
+  const emailList = document.getElementById("email-list");
+  const emailLoading = document.getElementById("email-loading");
+  const emailError = document.getElementById("email-error");
 
-def clean_token(token):
-    return token.replace("##", "")
+  emailLoading.style.display = "block";
+  emailError.style.display = "none";
 
-# ✅ Main extraction function
-def extract_event_entities(text: str):
-    words = text.split()
-    encoding = tokenizer(words, is_split_into_words=True, return_tensors="pt", truncation=True, padding=True)
+  try {
+    const res = await fetch(`${BACKEND_URL}/fetch_emails`, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
 
-    input_ids = encoding["input_ids"].to(device)
-    attention_mask = encoding["attention_mask"].to(device)
+    if (!res.ok) throw new Error("Email fetch failed");
 
-    with torch.no_grad():
-        outputs = model(input_ids=input_ids, attention_mask=attention_mask)
+    const emails = await res.json();
+    emailList.innerHTML = "";
 
-    predictions = torch.argmax(outputs.logits, dim=2)[0]
-    tokens = tokenizer.convert_ids_to_tokens(input_ids[0])
-    labels = [id2label[p.item()] for p in predictions]
+    emails.forEach((email) => {
+      const div = document.createElement("div");
+      div.className = "email-item";
+      div.textContent = email.subject || "No Subject";
+      div.addEventListener("click", () => fetchEvents(email.id));
+      emailList.appendChild(div);
+    });
+  } catch (err) {
+    console.error(err);
+    emailError.style.display = "block";
+    emailError.textContent = "Failed to fetch emails.";
+  } finally {
+    emailLoading.style.display = "none";
+  }
+}
 
-    result = {"event_name": "", "date": "", "time": "", "venue": ""}
+// Extract events
+async function fetchEvents(emailId) {
+  const eventsList = document.getElementById("events-list");
+  const eventsLoading = document.getElementById("events-loading");
+  const eventsError = document.getElementById("events-error");
 
-    for token, label in zip(tokens, labels):
-        label = label.lower()
+  eventsLoading.style.display = "block";
+  eventsError.style.display = "none";
 
-        # Skip special tokens
-        if token in ["[CLS]", "[SEP]", "[PAD]"]:
-            continue
+  try {
+    const res = await fetch(`${BACKEND_URL}/process_emails`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${accessToken}`,
+      },
+      body: JSON.stringify({ emailId }),
+    });
 
-        token = clean_token(token)
+    if (!res.ok) throw new Error("Event extraction failed");
 
-        if "event" in label:
-            result["event_name"] += token + " "
-        elif "date" in label:
-            result["date"] += token + " "
-        elif "time" in label:
-            result["time"] += token + " "
-        elif "venue" in label:
-            result["venue"] += token + " "
+    const events = await res.json();
+    console.log("✅ Extracted Events:", events);  // Debug log
+    eventsList.innerHTML = "";
 
-    return {k: v.strip() for k, v in result.items()}
+    if (!Array.isArray(events) || events.length === 0) {
+      eventsError.style.display = "block";
+      eventsError.textContent = "No events found for this email.";
+      return;
+    }
 
-# ✅ Example usage for testing
-if __name__ == "__main__":
-    sample_text = "Join us for TechTalk on 25 July at 10:30 AM in Anna Auditorium, Chennai."
-    output = extract_event_entities(sample_text)
-    print("\n🧠 Extracted Event Details:")
-    for key, value in output.items():
-        print(f"{key:12}: {value}")
+    events.forEach((event) => {
+      // Handle case where nothing was extracted
+      if (!event.event_name && !event.date && !event.time && !event.venue) return;
+
+      const card = document.createElement("div");
+      card.className = "card";
+      card.innerHTML = `
+        <div style="color: #8b5cf6; font-weight: bold;">${event.type || 'Event'}</div>
+        <h2>${event.event_name || 'No Title'}</h2>
+        <p>📅 ${event.date || 'N/A'}</p>
+        <p>⏰ ${event.time || 'N/A'}</p>
+        <p>📍 ${event.venue || 'N/A'}</p>
+      `;
+      eventsList.appendChild(card);
+    });
+
+    updateSummary(events);
+  } catch (err) {
+    console.error(err);
+    eventsError.style.display = "block";
+    eventsError.textContent = "No events found for this email.";
+  } finally {
+    eventsLoading.style.display = "none";
+  }
+}
+
+// Summary updater
+function updateSummary(events) {
+  const total = events.length;
+  const today = new Date();
+  const weekStart = new Date(today);
+  weekStart.setDate(today.getDate() - today.getDay());
+  const weekEnd = new Date(weekStart);
+  weekEnd.setDate(weekStart.getDate() + 6);
+
+  const thisWeek = events.filter((ev) => {
+    const dt = new Date(ev.date);
+    return dt >= weekStart && dt <= weekEnd;
+  }).length;
+
+  const attendees = events.reduce((sum, ev) => sum + (parseInt(ev.attendees) || 0), 0);
+
+  document.getElementById("total-events").textContent = total;
+  document.getElementById("this-week-events").textContent = thisWeek;
+  document.getElementById("total-attendees").textContent = attendees;
+  document.getElementById("upcoming-count").textContent = total;
+  document.getElementById("attended-count").textContent = 0;
+  document.getElementById("missed-count").textContent = 0;
+}
+
+// Search
+function setupSearch() {
+  const input = document.getElementById("search-events");
+  input.addEventListener("input", (e) => {
+    const val = e.target.value.toLowerCase();
+    const cards = document.querySelectorAll(".events .card");
+    cards.forEach((c) => {
+      const title = c.querySelector("h2").textContent.toLowerCase();
+      c.style.display = title.includes(val) ? "block" : "none";
+    });
+  });
+}
+
+// Init
+window.onload = function () {
+  setupSearch();
+
+  try {
+    google.accounts.id.initialize({
+      client_id: "721040422695-9m0ge0d19gqaha28rse2le19ghran03u.apps.googleusercontent.com",
+      callback: handleCredentialResponse,
+      auto_select: false,
+      cancel_on_tap_outside: true,
+      itp_support: true,
+    });
+
+    const loginButton = document.getElementById("login-button");
+    if (!loginButton) {
+      console.error("Login button element not found");
+      document.getElementById("email-error").style.display = "block";
+      document.getElementById("email-error").textContent = "Login button not found.";
+      return;
+    }
+
+    google.accounts.id.renderButton(loginButton, {
+      theme: "outline",
+      size: "large",
+      width: 300,
+    });
+
+    google.accounts.id.prompt();
+  } catch (err) {
+    console.error("GSI Initialization failed:", err);
+    document.getElementById("email-error").style.display = "block";
+    document.getElementById("email-error").textContent = "Google Sign-In init failed.";
+  }
+};
