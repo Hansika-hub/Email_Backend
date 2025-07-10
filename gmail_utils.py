@@ -3,8 +3,14 @@ from google_auth_oauthlib.flow import Flow
 from googleapiclient.discovery import build
 import os, pickle
 
+# Only readonly Gmail scope is needed
 SCOPES = ['https://www.googleapis.com/auth/gmail.readonly']
 
+def get_gmail_service(access_token):
+    """
+    Given an access_token from the frontend, build and return a Gmail API service object.
+    """
+    creds = Credentials(token=access_token, scopes=SCOPES)
 def get_gmail_service():
     creds = None
     if os.path.exists('token.json'):
