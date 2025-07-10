@@ -1,7 +1,7 @@
 from flask import Flask, request, jsonify, session
 from flask_cors import CORS
 from gmail_utils import get_gmail_service
-from extractor import extract_event_entities, clean_email_content
+from extractor import extract_cleaned_event
 from db_utils import save_to_db, delete_expired_events
 from google.oauth2 import id_token
 from google.auth.transport import requests as google_requests
@@ -11,15 +11,13 @@ import base64
 app = Flask(__name__)
 app.secret_key = "super_secret"
 
-# ✅ Secure session settings
 app.config.update(
     SESSION_COOKIE_SECURE=True,
     SESSION_COOKIE_HTTPONLY=True,
     SESSION_COOKIE_SAMESITE='None'
 )
 
-# ✅ CORS config (for Vercel frontend)
-CORS(app, supports_credentials=True, origins=["https://email-mu-eight.vercel.app"])
+CORS(app, supports_credentials=True, resources={r"/*": {"origins": "https://email-mu-eight.vercel.app"}})
 
 all_events = []  # Optional in-memory backup (used only in-session)
 
@@ -29,9 +27,11 @@ def block_non_json_post():
         return jsonify({"error": "Only JSON POST requests allowed"}), 415
 
 
-# ✅ Google One Tap Authentication
-@app.route("/", methods=["POST"])
+@app.route("/", methods=["POST", "OPTIONS"])
 def authenticate():
+    if request.method == "OPTIONS":
+        return '', 200
+
     data = request.get_json()
     id_token_str = data.get("token")
 
@@ -58,7 +58,6 @@ def authenticate():
         return jsonify({"error": "Token verification failed"}), 400
 
 
-# ✅ Fetch email subjects
 @app.route("/fetch_emails", methods=["GET"])
 def fetch_emails():
     auth_header = request.headers.get("Authorization", "")
@@ -93,9 +92,11 @@ def fetch_emails():
         return jsonify({"error": "Failed to fetch emails from Gmail"}), 500
 
 
-# ✅ Process and extract event from a specific email
-@app.route("/process_emails", methods=["POST"])
+@app.route("/process_emails", methods=["POST", "OPTIONS"])
 def process_email():
+    if request.method == "OPTIONS":
+        return '', 200
+
     data = request.get_json()
     email_id = data.get("emailId")
 
@@ -126,7 +127,7 @@ def process_email():
             return jsonify({"error": "Email body is empty"}), 400
 
         decoded_email = base64.urlsafe_b64decode(body).decode("utf-8", errors="ignore")
-        result = extract_cleaned_event(decoded_email)  # ✅ Cleaner logic
+        result = extract_cleaned_event(decoded_email)
 
         if sum(1 for v in result.values() if v.strip()) >= 3:
             result["attendees"] = 1
@@ -141,19 +142,16 @@ def process_email():
         return jsonify({"error": "Failed to process email"}), 500
 
 
-# ✅ Delete expired reminders
 @app.route("/cleanup_reminders", methods=["POST"])
 def cleanup():
     deleted = delete_expired_events()
     return jsonify({"deleted": deleted})
 
 
-# ✅ Fetch all saved reminders from memory (or DB, if needed)
 @app.route("/get_events", methods=["GET"])
 def get_events():
     return jsonify(all_events)
 
 
-# ✅ Run the app
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
