@@ -89,42 +89,40 @@ def fetch_emails():
         print("📡 Gmail API error:", str(e))
         return jsonify({"error": "Failed to fetch emails from Gmail"}), 500
 
-@app.route("/process_emails", methods=["GET"])
-def process_all_emails():
+
+@app.route("/process_emails", methods=["POST"])
+def process_email():
+    data = request.get_json()
+    email_id = data.get("emailId")
+
     auth_header = request.headers.get("Authorization", "")
     if not auth_header.startswith("Bearer "):
         return jsonify({"error": "Unauthorized"}), 401
 
     access_token = auth_header.split(" ")[1]
 
+    if not email_id:
+        return jsonify({"error": "Missing email ID"}), 400
+
     try:
         creds = Credentials(token=access_token)
         service = build("gmail", "v1", credentials=creds)
 
-        results = service.users().messages().list(userId="me", maxResults=50, q="is:unread").execute()
-        messages = results.get("messages", [])
+        msg_detail = service.users().messages().get(userId="me", id=email_id, format='full').execute()
+        snippet = msg_detail.get("snippet", "")
 
-        extracted = []
+        result = extract_event_entities(snippet)
+        if sum(1 for v in result.values() if v.strip()) >= 3:
+            result["attendees"] = 1
+            all_events.append(result)
+            save_to_db(result)
+            return jsonify([result])
 
-        for msg in messages:
-            try:
-                msg_detail = service.users().messages().get(userId="me", id=msg["id"], format="full").execute()
-                snippet = msg_detail.get("snippet", "")
-                result = extract_event_entities(snippet)
+        return jsonify([])
 
-                if sum(1 for v in result.values() if v.strip()) >= 3:
-                    result["attendees"] = 1
-                    extracted.append(result)
-                    save_to_db(result)
-            except Exception as e:
-                print(f"⚠️ Skipping email due to error: {e}")
-                continue
-
-        return jsonify(extracted)
     except Exception as e:
         print("📡 Gmail API error:", str(e))
-        return jsonify({"error": "Failed to process emails"}), 500
-
+        return jsonify({"error": "Failed to process email"}), 500
 
 
 @app.route("/cleanup_reminders", methods=["POST"])
