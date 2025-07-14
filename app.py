@@ -9,6 +9,7 @@ from googleapiclient.discovery import build
 from google.oauth2 import id_token
 from google.auth.transport import requests as google_requests
 
+
 app = Flask(__name__)
 app.secret_key = "super_secret"
 
@@ -123,6 +124,52 @@ def process_email():
     except Exception as e:
         print("📡 Gmail API error:", str(e))
         return jsonify({"error": "Failed to process email"}), 500
+        
+@app.route("/add_to_calendar", methods=["POST"])
+def add_to_calendar():
+    auth_header = request.headers.get("Authorization", "")
+    if not auth_header.startswith("Bearer "):
+        return jsonify({"error": "Unauthorized"}), 401
+
+    access_token = auth_header.split(" ")[1]
+    event_data = request.get_json()
+
+    try:
+        creds = Credentials(token=access_token)
+        service = build("calendar", "v3", credentials=creds)
+
+        # 🧠 Construct event data
+        event = {
+            "summary": event_data.get("event_name", "Event"),
+            "location": event_data.get("venue", ""),
+            "description": "Auto-added by Event Email Extractor",
+            "start": {
+                "dateTime": f"{event_data['date']}T{event_data['time']}:00",
+                "timeZone": "Asia/Kolkata",
+            },
+            "end": {
+                "dateTime": f"{event_data['date']}T{event_data['time']}:00",
+                "timeZone": "Asia/Kolkata",
+            },
+            "reminders": {
+                "useDefault": False,
+                "overrides": [
+                    {"method": "popup", "minutes": 1440},  # 1 day
+                    {"method": "popup", "minutes": 300},   # 5 hours
+                    {"method": "popup", "minutes": 60},    # 1 hour
+                    {"method": "popup", "minutes": 30},    # 30 mins
+                ],
+            },
+        }
+
+        # ✅ Insert into user's primary calendar
+        created_event = service.events().insert(calendarId='primary', body=event).execute()
+
+        return jsonify({"status": "added", "eventId": created_event.get("id")})
+
+    except Exception as e:
+        print("📅 Calendar API error:", str(e))
+        return jsonify({"error": "Failed to add event to calendar"}), 500
 
 
 @app.route("/cleanup_reminders", methods=["POST"])
