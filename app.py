@@ -127,48 +127,53 @@ def process_email():
         
 @app.route("/add_to_calendar", methods=["POST"])
 def add_to_calendar():
-    auth_header = request.headers.get("Authorization", "")
-    if not auth_header.startswith("Bearer "):
-        return jsonify({"error": "Unauthorized"}), 401
-
-    access_token = auth_header.split(" ")[1]
-    event_data = request.get_json()
-
     try:
-        creds = Credentials(token=access_token)
-        service = build("calendar", "v3", credentials=creds)
+        access_token = request.headers.get("Authorization", "").split(" ")[1]
+        event = request.json
+        print("📥 Event received:", event)
 
-        # 🧠 Construct event data
-        event = {
-            "summary": event_data.get("event_name", "Event"),
-            "location": event_data.get("venue", ""),
-            "description": "Auto-added by Event Email Extractor",
+        # Validate input
+        if not all(k in event for k in ("event_name", "date", "time", "venue")):
+            print("⚠️ Missing fields in event:", event)
+            return jsonify({"error": "Missing required event fields"}), 400
+
+        # Build credentials
+        credentials = Credentials(token=access_token)
+        service = build("calendar", "v3", credentials=credentials)
+
+        # Construct datetime
+        start_datetime = f"{event['date']}T{event['time']}:00"
+        print("📅 Creating event with start:", start_datetime)
+
+        event_body = {
+            "summary": event["event_name"],
+            "location": event["venue"],
             "start": {
-                "dateTime": f"{event_data['date']}T{event_data['time']}:00",
+                "dateTime": start_datetime,
                 "timeZone": "Asia/Kolkata",
             },
             "end": {
-                "dateTime": f"{event_data['date']}T{event_data['time']}:00",
+                "dateTime": start_datetime,  # Optional: add 1 hour for end time
                 "timeZone": "Asia/Kolkata",
             },
             "reminders": {
                 "useDefault": False,
                 "overrides": [
-                    {"method": "popup", "minutes": 1440},  # 1 day
-                    {"method": "popup", "minutes": 300},   # 5 hours
-                    {"method": "popup", "minutes": 60},    # 1 hour
-                    {"method": "popup", "minutes": 30},    # 30 mins
+                    {"method": "popup", "minutes": 1440},
+                    {"method": "popup", "minutes": 300},
+                    {"method": "popup", "minutes": 60},
+                    {"method": "popup", "minutes": 30},
                 ],
             },
         }
 
-        # ✅ Insert into user's primary calendar
-        created_event = service.events().insert(calendarId='primary', body=event).execute()
+        event_created = service.events().insert(calendarId="primary", body=event_body).execute()
+        print("✅ Calendar Event Created:", event_created["id"])
 
-        return jsonify({"status": "added", "eventId": created_event.get("id")})
+        return jsonify({"message": "Event added to calendar"}), 200
 
     except Exception as e:
-        print("📅 Calendar API error:", str(e))
+        print("❌ Calendar Add Error:", str(e))  # <--- You’ll now see real error in Render logs
         return jsonify({"error": "Failed to add event to calendar"}), 500
 
 
