@@ -9,3 +9,4 @@ google-auth-oauthlib
 beautifulsoup4
 protobuf
 email-reply-parser
+google-auth-httplib2
