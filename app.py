@@ -1,6 +1,6 @@
 from flask import Flask, redirect, request, jsonify, session
 from gmail_utils import get_gmail_service
-from extractor import extract_event_entities
+from extractor import extract_event  # ✅ Uses fallback to Mistral if needed
 from flask_cors import CORS
 import os
 from db_utils import save_to_db
@@ -112,7 +112,7 @@ def process_email():
         msg_detail = service.users().messages().get(userId="me", id=email_id, format='full').execute()
         snippet = msg_detail.get("snippet", "")
 
-        result = extract_event_entities(snippet)
+        result = extract_event(snippet)  # ✅ Uses BERT first, then Mistral fallback
         if sum(1 for v in result.values() if v.strip()) >= 3:
             result["attendees"] = 1
             all_events.append(result)
