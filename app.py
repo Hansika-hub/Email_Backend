@@ -295,8 +295,7 @@ def process_email():
     email_id = data.get("emailId")
 
     if not email_id:
-        return jsonify({"error": "Missi
-ng email ID"}), 400
+        return jsonify({"error": "Missing email ID"}), 400
 
     try:
         creds = Credentials(token=access_token, scopes=["https://www.googleapis.com/auth/gmail.readonly"])
