@@ -1,13 +1,16 @@
-from flask import Flask, redirect, request, jsonify, session
+from flask import Flask, request, jsonify, session
 from flask_cors import CORS
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from google.oauth2 import id_token
 from google.auth.transport import requests as google_requests
+from google.auth.exceptions import RefreshError
+from googleapiclient.errors import HttpError
 import os
 import logging
 from extractor import extract_event
 from db_utils import save_to_db, delete_expired_events
+import requests
 
 app = Flask(__name__)
 app.secret_key = os.getenv("SECRET_KEY", "super_secret")
@@ -20,9 +23,11 @@ app.config.update(
 )
 
 # Enhanced CORS configuration
-CORS(app, supports_credentials=True, origins=["https://email-mu-eight.vercel.app"], 
-     allow_headers=["Content-Type", "Authorization"], 
-     methods=["GET", "POST", "OPTIONS"])
+CORS(app, supports_credentials=True, origins=["https://email-mu-eight.vercel.app"],
+     allow_headers=["Content-Type", "Authorization"],
+     methods=["GET", "POST", "OPTIONS"],
+     expose_headers=["Access-Control-Allow-Origin"],
+     max_age=600)
 
 # Setup logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -32,13 +37,55 @@ user_tokens = {}
 
 all_events = []
 
+def validate_access_token(access_token, required_scopes):
+    """Validate the access token and its scopes."""
+    try:
+        if not access_token or not isinstance(access_token, str) or len(access_token) < 10:
+            return False, "Invalid access token format"
+        response = requests.get(
+            f"https://www.googleapis.com/oauth2/v3/tokeninfo?access_token={access_token}",
+            timeout=5
+        )
+        if response.status_code != 200:
+            return False, f"Token validation failed: {response.text}"
+        token_info = response.json()
+        if "error_description" in token_info:
+            return False, f"Token validation failed: {token_info['error_description']}"
+        if int(token_info.get("expires_in", 0)) <= 0:
+            return False, "Access token has expired"
+        token_scopes = token_info.get("scope", "").split()
+        if not all(scope in token_scopes for scope in required_scopes):
+            return False, f"Token missing required scopes: {required_scopes}"
+        return True, None
+    except requests.RequestException as e:
+        return False, f"Failed to validate token: {str(e)}"
+
+def get_credentials(user_email, access_token):
+    refresh_token = user_tokens.get(user_email)
+    return Credentials(
+        token=access_token,
+        refresh_token=refresh_token,
+        token_uri="https://oauth2.googleapis.com/token",
+        client_id=os.getenv("GOOGLE_CLIENT_ID"),
+        client_secret=os.getenv("GOOGLE_CLIENT_SECRET"),
+        scopes=["https://www.googleapis.com/auth/gmail.readonly", "https://www.googleapis.com/auth/calendar.events"]
+    )
+
 @app.route("/<path:path>", methods=["OPTIONS"])
 def handle_options(path):
-    return jsonify({"status": "ok"}), 200
+    logging.info(f"Handling OPTIONS request for {path}")
+    response = jsonify({"status": "ok"})
+    response.headers.add("Access-Control-Allow-Origin", "https://email-mu-eight.vercel.app")
+    response.headers.add("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+    response.headers.add("Access-Control-Allow-Headers", "Content-Type, Authorization")
+    response.headers.add("Access-Control-Allow-Credentials", "true")
+    response.headers.add("Access-Control-Max-Age", "600")
+    return response, 200
 
 @app.before_request
 def block_non_json_post():
     if request.method == 'POST' and not request.is_json and request.endpoint != 'handle_options':
+        logging.error("Non-JSON POST request blocked")
         return jsonify({"error": "Only JSON POST requests allowed"}), 415
 
 @app.route("/", methods=["POST"])
@@ -47,6 +94,7 @@ def authenticate():
     id_token_str = data.get("token")
 
     if not id_token_str:
+        logging.error("Missing ID token")
         return jsonify({"error": "Missing ID token"}), 400
 
     try:
@@ -57,6 +105,7 @@ def authenticate():
         )
 
         session["email"] = idinfo["email"]
+        logging.info(f"Authenticated user: {idinfo['email']}")
         return jsonify({
             "status": "authenticated",
             "user": idinfo["email"],
@@ -73,34 +122,33 @@ def store_tokens():
     refresh_token = data.get("refreshToken")
 
     if not user_email or not refresh_token:
+        logging.error("Missing userEmail or refreshToken in /store-tokens")
         return jsonify({"error": "Missing userEmail or refreshToken"}), 400
 
     user_tokens[user_email] = refresh_token
     logging.info(f"Stored refresh token for {user_email}")
     return jsonify({"status": "success"}), 200
 
-def get_credentials(user_email, access_token):
-    refresh_token = user_tokens.get(user_email)
-    return Credentials(
-        token=access_token,
-        refresh_token=refresh_token,
-        token_uri="https://oauth2.googleapis.com/token",
-        client_id=os.getenv("GOOGLE_CLIENT_ID"),
-        client_secret=os.getenv("GOOGLE_CLIENT_SECRET"),
-        scopes=["https://www.googleapis.com/auth/gmail.readonly", "https://www.googleapis.com/auth/calendar.events"]
-    )
-
 @app.route("/fetch_emails", methods=["GET"])
 def fetch_emails():
     auth_header = request.headers.get("Authorization", "")
     if not auth_header.startswith("Bearer "):
+        logging.error("Missing or invalid Authorization header")
         return jsonify({"error": "Unauthorized: Missing or invalid Authorization header"}), 401
 
     access_token = auth_header.split(" ")[1]
     user_email = session.get("email")
 
     if not user_email:
+        logging.error("User email not found in session")
         return jsonify({"error": "User email not found in session"}), 401
+
+    is_valid, error_message = validate_access_token(
+        access_token, ["https://www.googleapis.com/auth/gmail.readonly"]
+    )
+    if not is_valid:
+        logging.error(f"Access token validation failed: {error_message}")
+        return jsonify({"error": error_message}), 401
 
     try:
         creds = get_credentials(user_email, access_token)
@@ -119,15 +167,23 @@ def fetch_emails():
                 "subject": subject
             })
 
+        logging.info(f"Fetched {len(email_list)} emails for {user_email}")
         return jsonify(email_list), 200
+    except HttpError as e:
+        logging.error(f"Gmail API HttpError: {str(e)}", exc_info=True)
+        return jsonify({"error": f"Gmail API error: {str(e)}"}), 500
+    except RefreshError as e:
+        logging.error(f"Token refresh error: {str(e)}", exc_info=True)
+        return jsonify({"error": "Invalid or expired access token"}), 401
     except Exception as e:
-        logging.error(f"Gmail API error: {str(e)}", exc_info=True)
-        return jsonify({"error": f"Failed to fetch emails from Gmail: {str(e)}"}), 500
+        logging.error(f"Unexpected error in fetch_emails: {str(e)}", exc_info=True)
+        return jsonify({"error": f"Unexpected error: {str(e)}"}), 500
 
 @app.route("/process_emails", methods=["POST"])
 def process_email():
     auth_header = request.headers.get("Authorization", "")
     if not auth_header.startswith("Bearer "):
+        logging.error("Missing or invalid Authorization header")
         return jsonify({"error": "Unauthorized: Missing or invalid Authorization header"}), 401
 
     access_token = auth_header.split(" ")[1]
@@ -136,10 +192,19 @@ def process_email():
     email_id = data.get("emailId")
 
     if not email_id or not isinstance(email_id, str) or len(email_id) < 16:
-        return jsonify({"error": "Invalid email ID"}), 400
+        logging.error(f"Invalid email ID: {email_id}")
+        return jsonify({"error": "Invalid email ID: must be a non-empty string of at least 16 characters"}), 400
 
     if not user_email:
+        logging.error("User email not found in session")
         return jsonify({"error": "User email not found in session"}), 401
+
+    is_valid, error_message = validate_access_token(
+        access_token, ["https://www.googleapis.com/auth/gmail.readonly"]
+    )
+    if not is_valid:
+        logging.error(f"Access token validation failed: {error_message}")
+        return jsonify({"error": error_message}), 401
 
     try:
         creds = get_credentials(user_email, access_token)
@@ -153,17 +218,25 @@ def process_email():
             result["attendees"] = 1
             all_events.append(result)
             save_to_db(result)
+            logging.info(f"Processed email {email_id} with event: {result}")
             return jsonify([result]), 200
 
         return jsonify([]), 200
+    except HttpError as e:
+        logging.error(f"Gmail API HttpError: {str(e)}", exc_info=True)
+        return jsonify({"error": f"Gmail API error: {str(e)}"}), 500
+    except RefreshError as e:
+        logging.error(f"Token refresh error: {str(e)}", exc_info=True)
+        return jsonify({"error": "Invalid or expired access token"}), 401
     except Exception as e:
-        logging.error(f"Gmail API error: {str(e)}", exc_info=True)
-        return jsonify({"error": f"Failed to process email: {str(e)}"}), 500
+        logging.error(f"Unexpected error in process_emails: {str(e)}", exc_info=True)
+        return jsonify({"error": f"Unexpected error: {str(e)}"}), 500
 
 @app.route("/add_to_calendar", methods=["POST"])
 def add_to_calendar():
     auth_header = request.headers.get("Authorization", "")
     if not auth_header.startswith("Bearer "):
+        logging.error("Missing or invalid Authorization header")
         return jsonify({"error": "Unauthorized: Missing or invalid Authorization header"}), 401
 
     access_token = auth_header.split(" ")[1]
@@ -171,7 +244,15 @@ def add_to_calendar():
     event = request.get_json()
 
     if not user_email:
+        logging.error("User email not found in session")
         return jsonify({"error": "User email not found in session"}), 401
+
+    is_valid, error_message = validate_access_token(
+        access_token, ["https://www.googleapis.com/auth/calendar.events"]
+    )
+    if not is_valid:
+        logging.error(f"Access token validation failed: {error_message}")
+        return jsonify({"error": error_message}), 401
 
     try:
         if not all(k in event for k in ("event_name", "date", "time", "venue")):
@@ -207,17 +288,22 @@ def add_to_calendar():
         event_created = service.events().insert(calendarId="primary", body=event_body).execute()
         logging.info(f"Calendar Event Created: {event_created['id']}")
         return jsonify({"message": "Event added to calendar", "event_id": event_created["id"]}), 200
-    except Exception as e:
+    except HttpError as e:
         logging.error(f"Calendar Add Error: {str(e)}", exc_info=True)
         return jsonify({"error": f"Failed to add event to calendar: {str(e)}"}), 500
+    except RefreshError as e:
+        logging.error(f"Token refresh error: {str(e)}", exc_info=True)
+        return jsonify({"error": "Invalid or expired access token"}), 401
+    except Exception as e:
+        logging.error(f"Unexpected error in add_to_calendar: {str(e)}", exc_info=True)
+        return jsonify({"error": f"Unexpected error: {str(e)}"}), 500
 
 @app.route("/cleanup_reminders", methods=["POST"])
 def cleanup():
     try:
         deleted = delete_expired_events()
+        logging.info(f"Deleted {deleted} expired events")
         return jsonify({"deleted": deleted}), 200
     except Exception as e:
         logging.error(f"Cleanup Error: {str(e)}", exc_info=True)
         return jsonify({"error": f"Failed to cleanup reminders: {str(e)}"}), 500
-
-# Removed if __name__ == '__main__' block for production use with Gunicorn
