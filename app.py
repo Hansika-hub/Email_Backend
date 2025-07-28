@@ -121,12 +121,12 @@ def store_tokens():
 @app.route("/fetch_emails", methods=["GET"])
 def fetch_emails():
     auth_header = request.headers.get("Authorization", "")
-    if not auth_header.startswith("Bearer "):
+    user_email = request.headers.get("X-User-Email")
+    if not auth_header.startswith("Bearer ") or not user_email:
         logging.error("Missing or invalid Authorization header")
         return jsonify({"error": "Unauthorized: Missing or invalid Authorization header"}), 401
 
     access_token = auth_header.split(" ")[1]
-    user_email = session.get("email")
 
     if not user_email:
         logging.error("User email not found in session")
