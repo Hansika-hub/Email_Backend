@@ -26,7 +26,7 @@ app.config.update(
 CORS(app, supports_credentials=True, origins=["https://email-mu-eight.vercel.app"],
      allow_headers=["Content-Type", "Authorization"],
      methods=["GET", "POST", "OPTIONS"],
-     expose_headers=["Access-Control-Allow-Origin"],
+     expose_headers=["Content-Type", "Authorization"],
      max_age=600)
 
 # Setup logging
@@ -70,17 +70,6 @@ def get_credentials(user_email, access_token):
         client_secret=os.getenv("GOOGLE_CLIENT_SECRET"),
         scopes=["https://www.googleapis.com/auth/gmail.readonly", "https://www.googleapis.com/auth/calendar.events"]
     )
-
-@app.route("/<path:path>", methods=["OPTIONS"])
-def handle_options(path):
-    logging.info(f"Handling OPTIONS request for {path}")
-    response = jsonify({"status": "ok"})
-    response.headers.add("Access-Control-Allow-Origin", "https://email-mu-eight.vercel.app")
-    response.headers.add("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-    response.headers.add("Access-Control-Allow-Headers", "Content-Type, Authorization")
-    response.headers.add("Access-Control-Allow-Credentials", "true")
-    response.headers.add("Access-Control-Max-Age", "600")
-    return response, 200
 
 @app.before_request
 def block_non_json_post():
