@@ -23,8 +23,9 @@ app.config.update(
 )
 
 # Enhanced CORS configuration
-CORS(app, supports_credentials=True, origins=["https://email-mu-eight.vercel.app"],
-     allow_headers=["Content-Type", "Authorization"],
+CORS(app, supports_credentials=True,
+     origins=["https://email-mu-eight.vercel.app"],
+     allow_headers=["Content-Type", "Authorization", "X-User-Email"],
      methods=["GET", "POST", "OPTIONS"],
      expose_headers=["Content-Type", "Authorization"],
      max_age=600)
@@ -124,20 +125,22 @@ def fetch_emails():
     user_email = request.headers.get("X-User-Email")
     if not auth_header.startswith("Bearer ") or not user_email:
         logging.error("Missing or invalid Authorization header")
-        return jsonify({"error": "Unauthorized: Missing or invalid Authorization header"}), 401
+        response = jsonify({"error": "Unauthorized: Missing or invalid Authorization header"})
+        response.headers.add("Access-Control-Allow-Origin", "https://email-mu-eight.vercel.app")
+        response.headers.add("Access-Control-Allow-Credentials", "true")
+        return response, 401
 
     access_token = auth_header.split(" ")[1]
-
-    if not user_email:
-        logging.error("User email not found in session")
-        return jsonify({"error": "User email not found in session"}), 401
 
     is_valid, error_message = validate_access_token(
         access_token, ["https://www.googleapis.com/auth/gmail.readonly"]
     )
     if not is_valid:
         logging.error(f"Access token validation failed: {error_message}")
-        return jsonify({"error": error_message}), 401
+        response = jsonify({"error": error_message})
+        response.headers.add("Access-Control-Allow-Origin", "https://email-mu-eight.vercel.app")
+        response.headers.add("Access-Control-Allow-Credentials", "true")
+        return response, 401
 
     try:
         creds = get_credentials(user_email, access_token)
@@ -157,69 +160,122 @@ def fetch_emails():
             })
 
         logging.info(f"Fetched {len(email_list)} emails for {user_email}")
-        return jsonify(email_list), 200
+        response = jsonify(email_list)
+        response.headers.add("Access-Control-Allow-Origin", "https://email-mu-eight.vercel.app")
+        response.headers.add("Access-Control-Allow-Credentials", "true")
+        return response, 200
+
     except HttpError as e:
         logging.error(f"Gmail API HttpError: {str(e)}", exc_info=True)
-        return jsonify({"error": f"Gmail API error: {str(e)}"}), 500
+        response = jsonify({"error": f"Gmail API error: {str(e)}"})
+        response.headers.add("Access-Control-Allow-Origin", "https://email-mu-eight.vercel.app")
+        response.headers.add("Access-Control-Allow-Credentials", "true")
+        return response, 500
+
     except RefreshError as e:
         logging.error(f"Token refresh error: {str(e)}", exc_info=True)
-        return jsonify({"error": "Invalid or expired access token"}), 401
+        response = jsonify({"error": "Invalid or expired access token"})
+        response.headers.add("Access-Control-Allow-Origin", "https://email-mu-eight.vercel.app")
+        response.headers.add("Access-Control-Allow-Credentials", "true")
+        return response, 401
+
     except Exception as e:
         logging.error(f"Unexpected error in fetch_emails: {str(e)}", exc_info=True)
-        return jsonify({"error": f"Unexpected error: {str(e)}"}), 500
+        response = jsonify({"error": f"Unexpected error: {str(e)}"})
+        response.headers.add("Access-Control-Allow-Origin", "https://email-mu-eight.vercel.app")
+        response.headers.add("Access-Control-Allow-Credentials", "true")
+        return response, 500
+
 
 @app.route("/process_emails", methods=["POST"])
-def process_email():
+def process_emails():
     auth_header = request.headers.get("Authorization", "")
-    if not auth_header.startswith("Bearer "):
+    user_email = request.headers.get("X-User-Email")
+    if not auth_header.startswith("Bearer ") or not user_email:
         logging.error("Missing or invalid Authorization header")
-        return jsonify({"error": "Unauthorized: Missing or invalid Authorization header"}), 401
+        response = jsonify({"error": "Unauthorized: Missing or invalid Authorization header"})
+        response.headers.add("Access-Control-Allow-Origin", "https://email-mu-eight.vercel.app")
+        response.headers.add("Access-Control-Allow-Credentials", "true")
+        return response, 401
 
     access_token = auth_header.split(" ")[1]
-    user_email = session.get("email")
-    data = request.get_json()
-    email_id = data.get("emailId")
-
-    if not email_id or not isinstance(email_id, str) or len(email_id) < 16:
-        logging.error(f"Invalid email ID: {email_id}")
-        return jsonify({"error": "Invalid email ID: must be a non-empty string of at least 16 characters"}), 400
 
     if not user_email:
         logging.error("User email not found in session")
-        return jsonify({"error": "User email not found in session"}), 401
+        response = jsonify({"error": "User email not found in session"})
+        response.headers.add("Access-Control-Allow-Origin", "https://email-mu-eight.vercel.app")
+        response.headers.add("Access-Control-Allow-Credentials", "true")
+        return response, 401
 
     is_valid, error_message = validate_access_token(
         access_token, ["https://www.googleapis.com/auth/gmail.readonly"]
     )
     if not is_valid:
         logging.error(f"Access token validation failed: {error_message}")
-        return jsonify({"error": error_message}), 401
+        response = jsonify({"error": error_message})
+        response.headers.add("Access-Control-Allow-Origin", "https://email-mu-eight.vercel.app")
+        response.headers.add("Access-Control-Allow-Credentials", "true")
+        return response, 401
 
     try:
+        data = request.get_json()
+        if not data or "messageId" not in data:
+            response = jsonify({"error": "Missing messageId in request body"})
+            response.headers.add("Access-Control-Allow-Origin", "https://email-mu-eight.vercel.app")
+            response.headers.add("Access-Control-Allow-Credentials", "true")
+            return response, 400
+
         creds = get_credentials(user_email, access_token)
         service = build("gmail", "v1", credentials=creds)
 
-        msg_detail = service.users().messages().get(userId="me", id=email_id, format='full').execute()
-        snippet = msg_detail.get("snippet", "")
+        message = service.users().messages().get(userId="me", id=data["messageId"], format="full").execute()
+        payload = message.get("payload", {})
+        parts = payload.get("parts", [])
+        data_str = ""
 
-        result = extract_event(snippet)
-        if sum(1 for v in result.values() if v.strip()) >= 3:
-            result["attendees"] = 1
-            all_events.append(result)
-            save_to_db(result)
-            logging.info(f"Processed email {email_id} with event: {result}")
-            return jsonify([result]), 200
+        for part in parts:
+            if part.get("mimeType") == "text/plain":
+                data_str = base64.urlsafe_b64decode(part["body"]["data"]).decode("utf-8")
+                break
 
-        return jsonify([]), 200
+        if not data_str:
+            data_str = base64.urlsafe_b64decode(payload.get("body", {}).get("data", "")).decode("utf-8")
+
+        result = extract_event_details(data_str)
+
+        if result and sum(bool(result.get(k)) for k in ["event", "date", "time", "venue"]) >= 3:
+            save_event_to_db(user_email, result)
+            logging.info(f"Event extracted and saved for user: {user_email}")
+            response = jsonify([result])
+        else:
+            logging.info(f"No valid event data found for user: {user_email}")
+            response = jsonify([])
+
+        response.headers.add("Access-Control-Allow-Origin", "https://email-mu-eight.vercel.app")
+        response.headers.add("Access-Control-Allow-Credentials", "true")
+        return response, 200
+
     except HttpError as e:
         logging.error(f"Gmail API HttpError: {str(e)}", exc_info=True)
-        return jsonify({"error": f"Gmail API error: {str(e)}"}), 500
+        response = jsonify({"error": f"Gmail API error: {str(e)}"})
+        response.headers.add("Access-Control-Allow-Origin", "https://email-mu-eight.vercel.app")
+        response.headers.add("Access-Control-Allow-Credentials", "true")
+        return response, 500
+
     except RefreshError as e:
         logging.error(f"Token refresh error: {str(e)}", exc_info=True)
-        return jsonify({"error": "Invalid or expired access token"}), 401
+        response = jsonify({"error": "Invalid or expired access token"})
+        response.headers.add("Access-Control-Allow-Origin", "https://email-mu-eight.vercel.app")
+        response.headers.add("Access-Control-Allow-Credentials", "true")
+        return response, 401
+
     except Exception as e:
         logging.error(f"Unexpected error in process_emails: {str(e)}", exc_info=True)
-        return jsonify({"error": f"Unexpected error: {str(e)}"}), 500
+        response = jsonify({"error": f"Unexpected error: {str(e)}"})
+        response.headers.add("Access-Control-Allow-Origin", "https://email-mu-eight.vercel.app")
+        response.headers.add("Access-Control-Allow-Credentials", "true")
+        return response, 500
+
 
 @app.route("/add_to_calendar", methods=["POST"])
 def add_to_calendar():
@@ -229,7 +285,7 @@ def add_to_calendar():
         return jsonify({"error": "Unauthorized: Missing or invalid Authorization header"}), 401
 
     access_token = auth_header.split(" ")[1]
-    user_email = session.get("email")
+    user_email = request.headers.get("X-User-Email")
     event = request.get_json()
 
     if not user_email:
@@ -286,6 +342,15 @@ def add_to_calendar():
     except Exception as e:
         logging.error(f"Unexpected error in add_to_calendar: {str(e)}", exc_info=True)
         return jsonify({"error": f"Unexpected error: {str(e)}"}), 500
+        
+@app.route("/fetch_emails", methods=["OPTIONS"])
+def handle_options():
+    response = jsonify({})
+    response.headers.add("Access-Control-Allow-Origin", "https://email-mu-eight.vercel.app")
+    response.headers.add("Access-Control-Allow-Credentials", "true")
+    response.headers.add("Access-Control-Allow-Headers", "Content-Type, Authorization, X-User-Email")
+    response.headers.add("Access-Control-Allow-Methods", "GET, OPTIONS")
+    return response, 204
 
 @app.route("/cleanup_reminders", methods=["POST"])
 def cleanup():
