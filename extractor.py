@@ -1,80 +1,58 @@
+import re
 import os
 import replicate
-import json
 import torch
 from transformers import AutoTokenizer, AutoModelForTokenClassification
+from torch.nn.functional import softmax
 
-# ✅ Mapping label IDs to actual tags will be constant
-ID2LABEL = {
-    0: 'O', 1: 'B-date', 2: 'I-date', 3: 'B-event', 4: 'I-event',
-    5: 'B-time', 6: 'I-time', 7: 'B-venue', 8: 'I-venue'
-}
+# Load REPLICATE API token from environment
+replicate.api_token = os.getenv("REPLICATE_API_TOKEN")
 
-def clean_token(token):
-    return token.replace("##", "")
+# Global model and tokenizer
+tokenizer = None
+model = None
 
-# ✅ Lazy loading DistilBERT inside the function to save memory
-def extract_event_entities(text: str):
-    model_name = "Thiyaga158/Distilbert_Ner_Model_For_Email_Event_Extraction"
-    cache_dir = os.getenv("TRANSFORMERS_CACHE", "/tmp/cache")
+def load_model():
+    global tokenizer, model
+    if tokenizer is None or model is None:
+        model_name = "Thiyaga158/Distilbert_Ner_Model_For_Email_Event_Extraction"
+        cache_dir = os.getenv("TRANSFORMERS_CACHE", "/tmp/cache")
+        tokenizer = AutoTokenizer.from_pretrained(model_name, cache_dir=cache_dir)
+        model = AutoModelForTokenClassification.from_pretrained(model_name, cache_dir=cache_dir)
+        model.to("cpu")
+        model.eval()
+        print("✅ Model and tokenizer loaded successfully.")
 
-    tokenizer = AutoTokenizer.from_pretrained(model_name, cache_dir=cache_dir)
-    model = AutoModelForTokenClassification.from_pretrained(model_name, cache_dir=cache_dir)
-    model.to("cpu")
-    model.eval()
+def extract_event_entities(email_text):
+    load_model()
 
-    words = text.split()
-    encoding = tokenizer(words, is_split_into_words=True, return_tensors="pt", truncation=True, padding=True)
-
-    input_ids = encoding["input_ids"]
-    attention_mask = encoding["attention_mask"]
-
+    inputs = tokenizer(email_text, return_tensors="pt", truncation=True, max_length=512)
     with torch.no_grad():
-        outputs = model(input_ids=input_ids, attention_mask=attention_mask)
+        outputs = model(**inputs)
 
-    predictions = torch.argmax(outputs.logits, dim=2)[0]
-    tokens = tokenizer.convert_ids_to_tokens(input_ids[0])
-    labels = [ID2LABEL[p.item()] for p in predictions]
+    predictions = torch.argmax(outputs.logits, dim=2)
+    predicted_labels = [model.config.id2label[label_id.item()] for label_id in predictions[0]]
 
-    result = {"event_name": "", "date": "", "time": "", "venue": ""}
+    entities = {"event": "", "date": "", "time": "", "venue": ""}
+    current_entity = None
 
-    for token, label in zip(tokens, labels):
-        if token in ["[CLS]", "[SEP]", "[PAD]"]:
-            continue
-        token = clean_token(token)
-        label = label.lower()
+    for token, label in zip(tokenizer.tokenize(email_text), predicted_labels):
+        if label.startswith("B-"):
+            current_entity = label[2:].lower()
+            entities[current_entity] += token.replace("▁", " ") if "▁" in token else token
+        elif label.startswith("I-") and current_entity:
+            entities[current_entity] += token.replace("▁", " ") if "▁" in token else token
+        else:
+            current_entity = None
 
-        if "event" in label:
-            result["event_name"] += token + " "
-        elif "date" in label:
-            result["date"] += token + " "
-        elif "time" in label:
-            result["time"] += token + " "
-        elif "venue" in label:
-            result["venue"] += token + " "
+    return {key: value.strip() for key, value in entities.items()}
 
-    return {k: v.strip() for k, v in result.items()}
-
-# ✅ Mistral fallback using Replicate API (no memory issues here)
-def extract_with_mistral(text: str):
-    prompt = f"""
-    Extract the following details from this email:
-    - Event Name
-    - Date
-    - Time
-    - Venue
-
-    Respond ONLY in JSON format:
-    {{
-      "event_name": "...",
-      "date": "...",
-      "time": "...",
-      "venue": "..."
-    }}
-
-    Email:
-    \"\"\"{text}\"\"\"
-    """
+def extract_with_mistral(email_text):
+    prompt = (
+        f"Extract the event name, date, time, and venue from the email below.\n"
+        f"Only return plain JSON with the keys 'event', 'date', 'time', and 'venue'.\n\n"
+        f"Email:\n{email_text}"
+    )
 
     try:
         output = replicate.run(
@@ -82,37 +60,41 @@ def extract_with_mistral(text: str):
             input={
                 "prompt": prompt,
                 "temperature": 0.2,
-                "max_new_tokens": 300
+                "max_new_tokens": 300,
             }
         )
-        result_text = ''.join(output)
-        json_start = result_text.find("{")
-        json_output = json.loads(result_text[json_start:])
+        response_text = "".join(output)
+        print("🔍 Mistral Output:", response_text)
 
-        return {
-            "event_name": json_output.get("event_name", "").strip(),
-            "date": json_output.get("date", "").strip(),
-            "time": json_output.get("time", "").strip(),
-            "venue": json_output.get("venue", "").strip()
-        }
-
+        json_pattern = r"\{[^}]*\}"
+        match = re.search(json_pattern, response_text)
+        if match:
+            import json
+            data = json.loads(match.group())
+            return {k.lower(): v.strip() for k, v in data.items()}
     except Exception as e:
-        print("⚠️ Mistral fallback failed:", e)
-        return {"event_name": "", "date": "", "time": "", "venue": ""}
+        print("❌ Error in Mistral extraction:", e)
 
-# ✅ Combined extractor with fallback
-def extract_event(text: str):
-    first_pass = extract_event_entities(text)
-    filled_fields = sum(1 for v in first_pass.values() if v.strip())
+    return {"event": "", "date": "", "time": "", "venue": ""}
 
-    if filled_fields >= 3:
+def extract_event(email_text):
+    first_pass = extract_event_entities(email_text)
+    print("🧪 First pass:", first_pass)
+
+    filled_fields = [k for k, v in first_pass.items() if v]
+    if len(filled_fields) >= 3:
+        print("✅ Using first pass result.")
         return first_pass
-    else:
-        print("🔄 Using Mistral fallback due to incomplete extraction...")
-        return extract_with_mistral(text)
 
-# ✅ Test if needed
-if __name__ == "__main__":
-    sample_text = "Join us for TechTalk on 25 July at 10:30 AM in Anna Auditorium, Chennai."
-    result = extract_event(sample_text)
-    print(json.dumps(result, indent=2))
+    second_pass = extract_with_mistral(email_text)
+    print("🔁 Second pass (Mistral):", second_pass)
+
+    result = {
+        "event": first_pass.get("event") or second_pass.get("event") or "",
+        "date": first_pass.get("date") or second_pass.get("date") or "",
+        "time": first_pass.get("time") or second_pass.get("time") or "",
+        "venue": first_pass.get("venue") or second_pass.get("venue") or ""
+    }
+
+    print("✅ Final extracted event:", result)
+    return result
