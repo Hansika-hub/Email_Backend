@@ -19,7 +19,6 @@ def init_db():
     conn.commit()
     conn.close()
 
-
 def save_to_db(event):
     init_db()  # ensure table exists
 
@@ -39,6 +38,24 @@ def save_to_db(event):
     conn.commit()
     conn.close()
 
+def get_all_events():
+    """Return all saved events from the DB as a list of dicts."""
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    c.execute('SELECT event_name, date, time, venue, reminder_set_at FROM events')
+    rows = c.fetchall()
+    conn.close()
+
+    events = []
+    for event_name, date, time, venue, reminder_set_at in rows:
+        events.append({
+            "event_name": event_name,
+            "date": date,
+            "time": time,
+            "venue": venue,
+            "reminder_set_at": reminder_set_at
+        })
+    return events
 
 def delete_expired_events():
     conn = sqlite3.connect(DB_NAME)
