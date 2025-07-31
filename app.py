@@ -14,6 +14,13 @@ import requests
 from db_utils import get_all_events
 
 app = Flask(__name__)
+CORS(app, supports_credentials=True,
+     origins=["https://email-mu-eight.vercel.app"],
+     allow_headers=["Content-Type", "Authorization", "X-User-Email"],
+     methods=["GET", "POST", "OPTIONS"],
+     expose_headers=["Content-Type", "Authorization"],
+     max_age=600)
+
 app.secret_key = os.getenv("SECRET_KEY", "super_secret")
 
 # Secure session settings
@@ -22,14 +29,6 @@ app.config.update(
     SESSION_COOKIE_HTTPONLY=True,
     SESSION_COOKIE_SAMESITE='None'
 )
-
-# Enhanced CORS configuration
-CORS(app, supports_credentials=True,
-     origins=["https://email-mu-eight.vercel.app"],
-     allow_headers=["Content-Type", "Authorization", "X-User-Email"],
-     methods=["GET", "POST", "OPTIONS"],
-     expose_headers=["Content-Type", "Authorization"],
-     max_age=600)
 
 # Setup logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
