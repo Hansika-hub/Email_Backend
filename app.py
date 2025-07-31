@@ -11,6 +11,7 @@ import logging
 from extractor import extract_event
 from db_utils import save_to_db, delete_expired_events
 import requests
+from db_utils import get_all_events
 
 app = Flask(__name__)
 app.secret_key = os.getenv("SECRET_KEY", "super_secret")
@@ -36,7 +37,7 @@ logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(
 # Store refresh tokens (replace with database in production)
 user_tokens = {}
 
-all_events = []
+# all_events = []
 
 def validate_access_token(access_token, required_scopes):
     """Validate the access token and its scopes."""
@@ -207,7 +208,7 @@ def process_email():
         result = extract_event(snippet)
         if sum(1 for v in result.values() if v.strip()) >= 3:
             result["attendees"] = 1
-            all_events.append(result)
+            # all_events.append(result)
             save_to_db(result)
             logging.info(f"Processed email {email_id} with event: {result}")
             return jsonify([result]), 200
@@ -223,6 +224,19 @@ def process_email():
         logging.error(f"Unexpected error in process_emails: {str(e)}", exc_info=True)
         return jsonify({"error": f"Unexpected error: {str(e)}"}), 500
 
+@app.route("/events", methods=["GET"])
+def list_events():
+    """
+    Returns all events stored in SQLite.
+    The frontend can call this to populate history, summaries, charts, etc.
+    """
+    try:
+        events = get_all_events()
+        return jsonify(events), 200
+    except Exception as e:
+        logging.error(f"Error listing events: {e}", exc_info=True)
+        return jsonify({"error": "Could not load events"}), 500
+        
 @app.route("/add_to_calendar", methods=["POST"])
 def add_to_calendar():
     auth_header = request.headers.get("Authorization", "")
