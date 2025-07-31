@@ -12,3 +12,4 @@ email-reply-parser
 google-auth-httplib2
 replicate
 gunicorn
+bitsandbytes>=0.39.0
