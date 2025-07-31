@@ -9,7 +9,7 @@ def init_db():
     c.execute('''
         CREATE TABLE IF NOT EXISTS events (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            event_name TEXT,
+            event TEXT,
             date TEXT,
             time TEXT,
             venue TEXT,
@@ -26,10 +26,10 @@ def save_to_db(event):
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
     c.execute('''
-        INSERT INTO events (event_name, date, time, venue, reminder_set_at)
+        INSERT INTO events (event, date, time, venue, reminder_set_at)
         VALUES (?, ?, ?, ?, ?)
     ''', (
-        event['event_name'],
+        event['event'],
         event['date'],
         event['time'],
         event['venue'],
@@ -42,14 +42,14 @@ def get_all_events():
     """Return all saved events from the DB as a list of dicts."""
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
-    c.execute('SELECT event_name, date, time, venue, reminder_set_at FROM events')
+    c.execute('SELECT event, date, time, venue, reminder_set_at FROM events')
     rows = c.fetchall()
     conn.close()
 
     events = []
-    for event_name, date, time, venue, reminder_set_at in rows:
+    for event, date, time, venue, reminder_set_at in rows:
         events.append({
-            "event_name": event_name,
+            "event": event,
             "date": date,
             "time": time,
             "venue": venue,
