@@ -16,10 +16,24 @@ def load_model():
     global tokenizer, model
     if tokenizer is None or model is None:
         model_name = "Thiyaga158/Distilbert_Ner_Model_For_Email_Event_Extraction"
-        cache_dir = os.getenv("TRANSFORMERS_CACHE", "/tmp/cache")
-        tokenizer = AutoTokenizer.from_pretrained(model_name, cache_dir=cache_dir)
-        model = AutoModelForTokenClassification.from_pretrained(model_name, cache_dir=cache_dir)
-        model.to("cpu")
+        cache_dir  = os.getenv("TRANSFORMERS_CACHE", "/tmp/cache")
+
+        # 1) tokenizer loading stays the same
+        tokenizer = AutoTokenizer.from_pretrained(
+            model_name,
+            cache_dir=cache_dir
+        )
+
+        # 2) model loading with memory-saving flags
+        model = AutoModelForTokenClassification.from_pretrained(
+            model_name,
+            cache_dir=cache_dir,
+            load_in_8bit=True,         # 8-bit quantization
+            device_map="auto",         # auto-shard across CPU/GPU
+            low_cpu_mem_usage=True,    # reduce peak CPU RAM
+            torch_dtype="auto"         # FP16 if supported
+        )
+
         model.eval()
         print("✅ Model and tokenizer loaded successfully.")
 
