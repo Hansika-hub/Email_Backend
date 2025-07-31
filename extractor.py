@@ -40,46 +40,31 @@ def load_model():
 def extract_event_entities(email_text):
     load_model()
 
-    inputs = tokenizer(
-        email_text,
-        return_tensors="pt",
-        truncation=True,
-        max_length=512
-    )
+    inputs = tokenizer(email_text, return_tensors="pt", truncation=True, max_length=512)
     with torch.no_grad():
         outputs = model(**inputs)
 
     predictions = torch.argmax(outputs.logits, dim=2)
-    predicted_labels = [
-        model.config.id2label[label_id.item()]
-        for label_id in predictions[0]
-    ]
+    predicted_labels = [model.config.id2label[label_id.item()] for label_id in predictions[0]]
 
-    entities = {"event_name": "", "date": "", "time": "", "venue": ""}
+    entities = {"event": "", "date": "", "time": "", "venue": ""}
     current_entity = None
 
-    # Get the exact tokens the model saw
-    tokens = tokenizer.convert_ids_to_tokens(inputs.input_ids[0])
-
-    for token, label in zip(tokens, predicted_labels):
+    for token, label in zip(tokenizer.tokenize(email_text), predicted_labels):
         if label.startswith("B-"):
-            raw = label[2:].lower()                  # e.g. "event", "date"
-            key = "event_name" if raw == "event" else raw
-            current_entity = key
-            entities[key] += token.replace("▁", " ")
+            current_entity = label[2:].lower()
+            entities[current_entity] += token.replace("▁", " ") if "▁" in token else token
         elif label.startswith("I-") and current_entity:
-            entities[current_entity] += token.replace("▁", " ")
+            entities[current_entity] += token.replace("▁", " ") if "▁" in token else token
         else:
             current_entity = None
 
-    # Strip off any extra whitespace
-    return {k: v.strip() for k, v in entities.items()}
-
+    return {key: value.strip() for key, value in entities.items()}
 
 def extract_with_mistral(email_text):
     prompt = (
         f"Extract the event name, date, time, and venue from the email below.\n"
-        f"Only return plain JSON with the keys 'event_name', 'date', 'time', and 'venue'.\n\n"
+        f"Only return plain JSON with the keys 'event', 'date', 'time', and 'venue'.\n\n"
         f"Email:\n{email_text}"
     )
 
@@ -104,7 +89,7 @@ def extract_with_mistral(email_text):
     except Exception as e:
         print("❌ Error in Mistral extraction:", e)
 
-    return {"event_name": "", "date": "", "time": "", "venue": ""}
+    return {"event": "", "date": "", "time": "", "venue": ""}
 
 def extract_event(email_text):
     first_pass = extract_event_entities(email_text)
@@ -119,7 +104,7 @@ def extract_event(email_text):
     print("🔁 Second pass (Mistral):", second_pass)
 
     result = {
-        "event_name": first_pass.get("event_name") or second_pass.get("event_name") or "",
+        "event": first_pass.get("event") or second_pass.get("event") or "",
         "date": first_pass.get("date") or second_pass.get("date") or "",
         "time": first_pass.get("time") or second_pass.get("time") or "",
         "venue": first_pass.get("venue") or second_pass.get("venue") or ""
