@@ -204,10 +204,10 @@ def process_email():
         msg_detail = service.users().messages().get(userId="me", id=email_id, format='full').execute()
         snippet = msg_detail.get("snippet", "")
 
-        result = extract_event(snippet)
+        result = extract_event(snippet)  # ✅ MODIFIED: This now directly uses Mistral model
+
         if sum(1 for v in result.values() if v.strip()) >= 3:
             result["attendees"] = 1
-            # all_events.append(result)
             save_to_db(result)
             logging.info(f"Processed email {email_id} with event: {result}")
             return jsonify([result]), 200
@@ -225,10 +225,6 @@ def process_email():
 
 @app.route("/events", methods=["GET"])
 def list_events():
-    """
-    Returns all events stored in SQLite.
-    The frontend can call this to populate history, summaries, charts, etc.
-    """
     try:
         events = get_all_events()
         return jsonify(events), 200
@@ -259,7 +255,7 @@ def add_to_calendar():
         return jsonify({"error": error_message}), 401
 
     try:
-        if not all(k in event for k in ("event_name", "date", "time", "venue")):
+        if not all(k in event for k in ("event", "date", "time", "venue")):
             logging.warning(f"Missing fields in event: {event}")
             return jsonify({"error": "Missing required event fields"}), 400
 
@@ -268,14 +264,14 @@ def add_to_calendar():
 
         start_datetime = f"{event['date']}T{event['time']}:00"
         event_body = {
-            "summary": event["event_name"],
+            "summary": event["event"],
             "location": event["venue"],
             "start": {
                 "dateTime": start_datetime,
                 "timeZone": "Asia/Kolkata",
             },
             "end": {
-                "dateTime": start_datetime,  # Consider adding duration logic
+                "dateTime": start_datetime,  # Consider updating with actual duration
                 "timeZone": "Asia/Kolkata",
             },
             "reminders": {
@@ -301,7 +297,7 @@ def add_to_calendar():
     except Exception as e:
         logging.error(f"Unexpected error in add_to_calendar: {str(e)}", exc_info=True)
         return jsonify({"error": f"Unexpected error: {str(e)}"}), 500
-
+         
 @app.route("/cleanup_reminders", methods=["POST"])
 def cleanup():
     try:
