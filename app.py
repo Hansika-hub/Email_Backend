@@ -14,6 +14,10 @@ import requests
 from db_utils import get_all_events
 
 app = Flask(__name__)
+
+from db_utils import init_db
+init_db()
+
 CORS(app, supports_credentials=True,
      origins=["https://email-mu-eight.vercel.app"],
      allow_headers=["Content-Type", "Authorization", "X-User-Email"],
@@ -307,3 +311,4 @@ def cleanup():
     except Exception as e:
         logging.error(f"Cleanup Error: {str(e)}", exc_info=True)
         return jsonify({"error": f"Failed to cleanup reminders: {str(e)}"}), 500
+
