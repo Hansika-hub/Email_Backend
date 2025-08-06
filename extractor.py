@@ -15,7 +15,7 @@ def extract_event(email_text):
 
     try:
         output = replicate.run(
-            "mistralai/mistral-7b-instruct-v0.1",
+            "meta/meta-llama-3-8b-instruct",
             input={
                 "prompt": prompt,
                 "temperature": 0.2,
@@ -34,3 +34,4 @@ def extract_event(email_text):
         print("❌ Error in Mistral extraction:", e)
 
     return {"event": "", "date": "", "time": "", "venue": ""}
+
