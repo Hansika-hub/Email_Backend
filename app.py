@@ -96,12 +96,12 @@ def process_all_emails():
         return jsonify({"error": "Unauthorized"}), 401
 
     access_token = auth_header.split(" ")[1]
-   try:
+    try:
         creds = Credentials(token=access_token)
         service = build("gmail", "v1", credentials=creds)
         results = service.users().messages().list(userId="me", maxResults=50, q="is:unread").execute()
         messages = results.get("messages", [])
-       extracted = []
+        extracted = []
 
         for msg in messages:
             try:
@@ -122,8 +122,6 @@ def process_all_emails():
         print("📡 Gmail API error:", str(e))
         return jsonify({"error": "Failed to process emails"}), 500
 
-
-
 @app.route("/cleanup_reminders", methods=["POST"])
 def cleanup():
     from db_utils import delete_expired_events
@@ -134,3 +132,4 @@ def cleanup():
 # ✅ Main runner
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
+
