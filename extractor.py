@@ -8,7 +8,7 @@ cache_dir = os.getenv("TRANSFORMERS_CACHE", "/tmp/cache")
 tokenizer = AutoTokenizer.from_pretrained(model_name, cache_dir=cache_dir)
 model = AutoModelForTokenClassification.from_pretrained(model_name, cache_dir=cache_dir)
 # ✅ Device config
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+device = torch.device("cuda" if torch.cuda.is_available() and os.getenv("USE_GPU") == "1" else "cpu")
 print(f"✅ Device set to: {device}")
 model.to(device)
 model.eval()
@@ -20,7 +20,7 @@ def clean_token(token):
 # ✅ Main extraction function
 def extract_event_entities(text: str):
     words = text.split()
-    encoding = tokenizer(words, is_split_into_words=True, return_tensors="pt", truncation=True, padding=True)
+    encoding = tokenizer(words, is_split_into_words=True, return_tensors="pt", truncation=True, padding=True,max_length=256)
 
     input_ids = encoding["input_ids"].to(device)
     attention_mask = encoding["attention_mask"].to(device)
@@ -53,3 +53,4 @@ def extract_event_entities(text: str):
             result["venue"] += token + " "
 
     return {k: v.strip() for k, v in result.items()}
+
