@@ -1,37 +1,45 @@
-import re
+import torch
+from transformers import AutoTokenizer, AutoModelForTokenClassification
 import os
-import replicate
-import json
 
-# Load REPLICATE API token from environment
-replicate.api_token = os.getenv("REPLICATE_API_TOKEN")
+# ✅ Load model and tokenizer from Hugging Face
+model_name = "Thiyaga158/Distilbert_Ner_Model_For_Email_Event_Extraction"
+cache_dir = os.getenv("TRANSFORMERS_CACHE", "/tmp/cache")
 
-def extract_event(email_text):
-    prompt = (
-        f"Extract the event name, date, time, and venue from the email below.\n"
-        f"Only return plain JSON with the keys 'event', 'date', 'time', and 'venue'.\n\n"
-        f"Email:\n{email_text}"
-    )
+tokenizer = AutoTokenizer.from_pretrained(model_name, cache_dir=cache_dir)
+model = AutoModelForTokenClassification.from_pretrained(model_name, cache_dir=cache_dir)
+# ✅ Device config
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+print(f"✅ Device set to: {device}")
+model.to(device)
+model.eval()
+# ✅ Get label map
+id2label = model.config.id2label
+def clean_token(token):
+    return token.replace("##", "")
+# ✅ Main extraction function
+def extract_event_entities(text: str):
+    words = text.split()
+    encoding = tokenizer(words, is_split_into_words=True, return_tensors="pt", truncation=True, padding=True)
 
-    try:
-        output = replicate.run(
-            "meta/meta-llama-3-8b-instruct",
-            input={
-                "prompt": prompt,
-                "temperature": 0.2,
-                "max_new_tokens": 300,
-            }
-        )
-        response_text = "".join(output)
-        print("🔍 Mistral Output:", response_text)
+    for token, label in zip(tokens, labels):
+        label = label.lower()
 
-        json_pattern = r"\{[^}]*\}"
-        match = re.search(json_pattern, response_text)
-        if match:
-            data = json.loads(match.group())
-            return {k.lower(): v.strip() for k, v in data.items()}
-    except Exception as e:
-        print("❌ Error in Mistral extraction:", e)
+        # Skip special tokens
+        if token in ["[CLS]", "[SEP]", "[PAD]"]:
+            continue
 
-    return {"event": "", "date": "", "time": "", "venue": ""}
+        token = clean_token(token)
 
+        if "event" in label:
+            result["event_name"] += token + " "
+        elif "date" in label:
+
+    return {k: v.strip() for k, v in result.items()}
+# ✅ Example usage for testing
+if __name__ == "__main__":
+    sample_text = "Join us for TechTalk on 25 July at 10:30 AM in Anna Auditorium, Chennai."
+    output = extract_event_entities(sample_text)
+    print("\n🧠 Extracted Event Details:")
+    for key, value in output.items():
+        print(f"{key:12}: {value}")
