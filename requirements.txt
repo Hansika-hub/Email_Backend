@@ -1,13 +1,10 @@
 flask
 flask-cors
+transformers
+torch
 requests
 google-api-python-client
 google-auth
 google-auth-oauthlib
 beautifulsoup4
 protobuf
-email-reply-parser
-google-auth-httplib2
-replicate
-gunicorn
-bitsandbytes>=0.39.0
