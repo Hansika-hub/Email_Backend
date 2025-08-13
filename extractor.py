@@ -63,29 +63,47 @@ VENUE_KEYWORDS = [
 ]
 
 VENUE_REGEX = re.compile(
-    r"\b(?:Hall|Room|Block|Building|Centre|Center|Auditorium|Stadium|Theatre|Theater|Lab|Library|Gym|Campus|Park|Ground|Lawn)"
-    r"(?:\s+[A-Za-z0-9&\-]+){0,5}",
+    r"\b(?:[A-Za-z0-9&\-]+\s+){0,4}"
+    r"(?:Hall|Room|Block|Building|Centre|Center|Auditorium|Stadium|Theatre|Theater|Lab|Library|Gym|Campus|Park|Ground|Lawn)"
+    r"(?:\s+[A-Za-z0-9&\-]+){0,4}\b",
     re.IGNORECASE
 )
 
 def extract_venue(text: str) -> Optional[str]:
+    raw_text = text or ""
     candidates: List[str] = []
-    for match in VENUE_REGEX.findall(text or ""):
-        cleaned = match.strip()
-        if cleaned:
-            candidates.append(cleaned)
-    # Keyword-based simple scan
-    for line in (text or "").splitlines():
+
+    # Regex matches with optional prefixes before the venue keyword
+    for m in VENUE_REGEX.finditer(raw_text):
+        span = m.group(0).strip()
+        if span:
+            candidates.append(span)
+
+    # Keyword-based simple scan (full line as candidate)
+    for line in raw_text.splitlines():
         l = line.strip()
         if len(l) < 200 and any(kw in l.lower() for kw in VENUE_KEYWORDS):
             candidates.append(l)
-    if candidates:
-        v = candidates[0]
-        v = re.sub(r"\bat\s+\d{1,2}(:[0-5]\d)?\s?(AM|PM|am|pm)\b", "", v)
-        v = re.sub(r"\b\d{1,2}(:[0-5]\d)?\s?(AM|PM|am|pm)\b", "", v)
-        v = v.strip(",;:- ")
-        return v or candidates[0]
-    return None
+
+    if not candidates:
+        return None
+
+    # Clean and dedupe
+    cleaned: List[str] = []
+    for v in candidates:
+        vv = re.sub(r"\bat\s+\d{1,2}(:[0-5]\d)?\s?(AM|PM|am|pm)\b", "", v)
+        vv = re.sub(r"\b\d{1,2}(:[0-5]\d)?\s?(AM|PM|am|pm)\b", "", vv)
+        vv = re.sub(r"\s+", " ", vv).strip(",;:- ")
+        if vv:
+            cleaned.append(vv)
+
+    unique: List[str] = list(dict.fromkeys(cleaned))
+    if not unique:
+        return None
+
+    # Prefer multi-word, longer candidates
+    unique.sort(key=lambda s: (len(s.split()), len(s)), reverse=True)
+    return unique[0]
 
 
 # ---------- Hugging Face Inference API (primary) ----------
