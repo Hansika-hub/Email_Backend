@@ -1,6 +1,6 @@
 from flask import Flask, redirect, request, jsonify, session
 from gmail_utils import get_gmail_service
-from extractor import extract_event_details, is_event_like, count_event_fields, has_date_and_time, should_remind
+from extractor import extract_event_details, is_event_like, count_event_fields, has_date_and_time, should_remind, count_all_fields
 from flask_cors import CORS
 import os
 from db_utils import save_to_db
@@ -171,11 +171,15 @@ def process_all_emails():
 
                 # ✅ Call the extractor and gate by minimum fields
                 result = extract_event_details(subject, body_data)
-                # Always include extracted cards; calendar is controlled by presence of date+time
-                if count_event_fields(result) >= 3:
-                    result["attendees"] = 1
-                extracted.append(result)
-                save_to_db(result)
+                # Only accept emails with 3 or 4 available fields (event_name, date, time, venue)
+                available_fields = count_all_fields(result)
+                if available_fields >= 3:
+                    if count_event_fields(result) >= 3:
+                        result["attendees"] = 1
+                    extracted.append(result)
+                    save_to_db(result)
+                else:
+                    print(f"ℹ️ Skipping due to insufficient available fields ({available_fields}). Subject='{subject}', details={result}")
 
             except Exception as e:
                 print(f"⚠️ Skipping email due to error: {e}")
@@ -199,3 +203,5 @@ def cleanup():
 # ✅ Main runner
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
+
+
