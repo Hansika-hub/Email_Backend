@@ -171,14 +171,11 @@ def process_all_emails():
 
                 # ✅ Call the extractor and gate by minimum fields
                 result = extract_event_details(subject, body_data)
-                # Decide if this email warrants a reminder; render anyway, but only calendar if date+time
-                if should_remind(result):
-                    if count_event_fields(result) >= 3:
-                        result["attendees"] = 1
-                    extracted.append(result)
-                    save_to_db(result)
-                else:
-                    print(f"ℹ️ Skipping reminder for this email (model decided no reminder). Subject='{subject}', details={result}")
+                # Always include extracted cards; calendar is controlled by presence of date+time
+                if count_event_fields(result) >= 3:
+                    result["attendees"] = 1
+                extracted.append(result)
+                save_to_db(result)
 
             except Exception as e:
                 print(f"⚠️ Skipping email due to error: {e}")
@@ -202,5 +199,3 @@ def cleanup():
 # ✅ Main runner
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
-
-
