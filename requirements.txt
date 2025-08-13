@@ -4,9 +4,7 @@ requests
 google-api-python-client
 google-auth
 google-auth-oauthlib
-beautifulsoup4
-protobuf
 torch
 transformers
-spacy
+spacy==3.6.1
 https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.6.0/en_core_web_sm-3.6.0.tar.gz
