@@ -56,10 +56,9 @@ def _call_gemini(subject: str, body: str) -> Optional[Dict[str, Optional[str]]]:
         return None
     model = genai.GenerativeModel(GEMINI_MODEL)
     system = (
-        "You are an assistant that decides if an email warrants an event reminder and extracts details. "
-        "Use the subject as the event name. "
-        "Output STRICT JSON object with exactly these keys: "
-        "should_remind (boolean), event_name (string), date (YYYY-MM-DD or 'na'), time (HH:MM 24h or 'na'), venue (string or 'na'). "
+        "Extract event details from the email. Use the subject as the event name. "
+        "Return STRICT JSON object with exactly these keys: "
+        "event_name (string), date (YYYY-MM-DD or 'na'), time (HH:MM 24h or 'na'), venue (string or 'na'). "
         "If a value is missing/unknown, use 'na'. Do not include any other keys or text."
     )
     content = f"Subject: {subject}\n\nBody: {body[:5000]}"
@@ -80,7 +79,6 @@ def _call_gemini(subject: str, body: str) -> Optional[Dict[str, Optional[str]]]:
             return "na" if s.lower() in {"", "na", "n/a", "null", "none"} else s
 
         return {
-            "should_remind": bool(data.get("should_remind", True)),
             "event_name": norm(data.get("event_name")),
             "date": norm(data.get("date")),
             "time": norm(data.get("time")),
@@ -118,7 +116,6 @@ def extract_event_details(subject: Optional[str], body: Optional[str]) -> Dict[s
     subj = clean_event_name(subject or "")
     text = (body or "").strip()
     extracted = _call_gemini(subj, text) or {
-        "should_remind": False,
         "event_name": subj,
         "date": "na",
         "time": "na",
@@ -127,7 +124,7 @@ def extract_event_details(subject: Optional[str], body: Optional[str]) -> Dict[s
     if not extracted.get("event_name"):
         extracted["event_name"] = subj
     # Attach Google Calendar event only when both date and time are present (not 'na')
-    if extracted.get("should_remind") and extracted.get("date", "na").lower() != "na" and extracted.get("time", "na").lower() != "na":
+    if extracted.get("date", "na").lower() != "na" and extracted.get("time", "na").lower() != "na":
         extracted["gcal_event"] = _build_gcal_event(
             extracted.get("event_name"), extracted.get("date"), extracted.get("time"), extracted.get("venue")
         )
@@ -156,11 +153,8 @@ def has_date_and_time(details: Dict[str, Optional[str]]) -> bool:
 
 
 def should_remind(details: Dict[str, Optional[str]]) -> bool:
-    val = details.get("should_remind")
-    if isinstance(val, bool):
-        return val
-    # Fallback heuristic
-    return count_event_fields(details) >= 2
+    # Always treat as a potential event; caller can decide calendar by has_date_and_time
+    return True
 
 
 # ---------- Test ----------
