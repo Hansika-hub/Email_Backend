@@ -1,6 +1,6 @@
 from flask import Flask, redirect, request, jsonify, session
 from gmail_utils import get_gmail_service
-from extractor import extract_event_entities
+from extractor import extract_event_details
 from flask_cors import CORS
 import os
 from db_utils import save_to_db
@@ -96,31 +96,64 @@ def process_all_emails():
         return jsonify({"error": "Unauthorized"}), 401
 
     access_token = auth_header.split(" ")[1]
+
     try:
         creds = Credentials(token=access_token)
         service = build("gmail", "v1", credentials=creds)
-        results = service.users().messages().list(userId="me", maxResults=50, q="is:unread").execute()
+        results = service.users().messages().list(
+            userId="me", maxResults=20, q="is:unread"
+        ).execute()
         messages = results.get("messages", [])
         extracted = []
 
         for msg in messages:
             try:
-                msg_detail = service.users().messages().get(userId="me", id=msg["id"], format="full").execute()
-                snippet = msg_detail.get("snippet", "")
-                result = extract_event_entities(snippet)
+                msg_detail = service.users().messages().get(
+                    userId="me", id=msg["id"], format="full"
+                ).execute()
 
-                if sum(1 for v in result.values() if v.strip()) >= 3:
+                # ✅ Extract Subject
+                headers = msg_detail.get("payload", {}).get("headers", [])
+                subject = next(
+                    (h["value"] for h in headers if h["name"] == "Subject"),
+                    "No Subject"
+                )
+
+                # ✅ Extract Body text
+                body_data = ""
+                if "parts" in msg_detail["payload"]:
+                    for part in msg_detail["payload"]["parts"]:
+                        if part["mimeType"] == "text/plain":
+                            import base64
+                            body_data = base64.urlsafe_b64decode(
+                                part["body"]["data"]
+                            ).decode("utf-8", errors="ignore")
+                            break
+                else:
+                    if "body" in msg_detail["payload"] and "data" in msg_detail["payload"]["body"]:
+                        import base64
+                        body_data = base64.urlsafe_b64decode(
+                            msg_detail["payload"]["body"]["data"]
+                        ).decode("utf-8", errors="ignore")
+
+                # ✅ Call the new extractor
+                result = extract_event_details(subject, body_data)
+
+                if sum(1 for v in result.values() if v and str(v).strip()) >= 3:
                     result["attendees"] = 1
                     extracted.append(result)
                     save_to_db(result)
+
             except Exception as e:
                 print(f"⚠️ Skipping email due to error: {e}")
                 continue
 
         return jsonify(extracted)
+
     except Exception as e:
         print("📡 Gmail API error:", str(e))
         return jsonify({"error": "Failed to process emails"}), 500
+
 
 @app.route("/cleanup_reminders", methods=["POST"])
 def cleanup():
@@ -132,4 +165,5 @@ def cleanup():
 # ✅ Main runner
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
+
 
