@@ -1,6 +1,6 @@
 from flask import Flask, redirect, request, jsonify, session
 from gmail_utils import get_gmail_service
-from extractor import extract_event_details
+from extractor import extract_event_details, is_event_like, count_event_fields
 from flask_cors import CORS
 import os
 from db_utils import save_to_db
@@ -169,15 +169,16 @@ def process_all_emails():
                 # ✅ Extract Body text (handles nested parts and HTML)
                 body_data = _walk_parts_for_text(msg_detail.get("payload", {}))
 
-                # ✅ Call the new extractor
+                # ✅ Call the extractor and gate by minimum fields
                 result = extract_event_details(subject, body_data)
-
-                if sum(1 for v in result.values() if v and str(v).strip()) >= 3:
-                    result["attendees"] = 1
+                if is_event_like(result, minimum_required=2):
+                    # If all three present, mark attendees = 1 (legacy behavior)
+                    if count_event_fields(result) >= 3:
+                        result["attendees"] = 1
                     extracted.append(result)
                     save_to_db(result)
                 else:
-                    print(f"ℹ️ Skipping low-signal extraction for subject='{subject}' -> {result}")
+                    print(f"ℹ️ Skipping email due to insufficient fields (need >=2). Subject='{subject}', details={result}")
 
             except Exception as e:
                 print(f"⚠️ Skipping email due to error: {e}")
