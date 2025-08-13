@@ -8,8 +8,6 @@ from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from google.oauth2 import id_token
 from google.auth.transport import requests as google_requests
-import base64
-import re
 
 app = Flask(__name__)
 app.secret_key = "super_secret"
@@ -121,81 +119,25 @@ def process_all_emails():
                     "No Subject"
                 )
 
-                # ✅ Extract Body text (prefer text/plain, fallback to text/html). Also parse text/calendar (ICS)
-                def iter_parts(payload):
-                    if not payload:
-                        return
-                    if "parts" in payload:
-                        for p in payload["parts"]:
-                            # Some parts nest deeper
-                            if p.get("parts"):
-                                for sub in iter_parts(p):
-                                    yield sub
-                            else:
-                                yield p
-                    else:
-                        yield payload
+                # ✅ Extract Body text
+                body_data = ""
+                if "parts" in msg_detail["payload"]:
+                    for part in msg_detail["payload"]["parts"]:
+                        if part["mimeType"] == "text/plain":
+                            import base64
+                            body_data = base64.urlsafe_b64decode(
+                                part["body"]["data"]
+                            ).decode("utf-8", errors="ignore")
+                            break
+                else:
+                    if "body" in msg_detail["payload"] and "data" in msg_detail["payload"]["body"]:
+                        import base64
+                        body_data = base64.urlsafe_b64decode(
+                            msg_detail["payload"]["body"]["data"]
+                        ).decode("utf-8", errors="ignore")
 
-                plain_text = ""
-                html_text = ""
-                calendar_text = ""
-
-                for part in iter_parts(msg_detail.get("payload", {})):
-                    mime = part.get("mimeType", "")
-                    data = part.get("body", {}).get("data")
-                    if not data:
-                        continue
-                    decoded = base64.urlsafe_b64decode(data).decode("utf-8", errors="ignore")
-                    if mime.startswith("text/plain") and not plain_text:
-                        plain_text = decoded
-                    elif mime.startswith("text/html") and not html_text:
-                        html_text = decoded
-                    elif mime.startswith("text/calendar") and not calendar_text:
-                        calendar_text = decoded
-
-                # Fallback to payload body if needed
-                if not (plain_text or html_text):
-                    data = msg_detail.get("payload", {}).get("body", {}).get("data")
-                    if data:
-                        plain_text = base64.urlsafe_b64decode(data).decode("utf-8", errors="ignore")
-
-                # Crude HTML to text if needed
-                def html_to_text(html):
-                    if not html:
-                        return ""
-                    # remove scripts/styles and tags
-                    html = re.sub(r"<script[\s\S]*?</script>", " ", html, flags=re.IGNORECASE)
-                    html = re.sub(r"<style[\s\S]*?</style>", " ", html, flags=re.IGNORECASE)
-                    text = re.sub(r"<[^>]+>", " ", html)
-                    text = re.sub(r"\s+", " ", text)
-                    return text.strip()
-
-                body_data = plain_text or html_to_text(html_text)
-
-                # ✅ Call the extractor
+                # ✅ Call the new extractor
                 result = extract_event_details(subject, body_data)
-
-                # ✅ If ICS invite present, prefer DTSTART/DTEND over anything parsed from body
-                if calendar_text:
-                    # DTSTART;TZID=Asia/Kolkata:20250813T153000 or DTSTART:20250813T093000Z
-                    dtstart_match = re.search(r"^DTSTART(?:;[^:]+)?:([0-9TzZ]+)", calendar_text, flags=re.MULTILINE)
-                    if dtstart_match:
-                        v = dtstart_match.group(1)
-                        # normalize like YYYYMMDDTHHMM or YYYYMMDD
-                        y = v[0:4]
-                        m = v[4:6]
-                        d = v[6:8]
-                        date_norm = f"{y}-{m}-{d}"
-                        time_norm = None
-                        if len(v) >= 13 and ("T" in v or v.isdigit()):
-                            # try HHMM
-                            hhmm = v.split("T")[1][:4]
-                            if len(hhmm) == 4:
-                                time_norm = f"{hhmm[0:2]}:{hhmm[2:4]}"
-                        if date_norm:
-                            result["date"] = date_norm
-                        if time_norm:
-                            result["time"] = time_norm
 
                 if sum(1 for v in result.values() if v and str(v).strip()) >= 3:
                     result["attendees"] = 1
