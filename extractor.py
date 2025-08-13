@@ -1,20 +1,9 @@
 import os
 import re
-import torch
-from transformers import AutoTokenizer, AutoModelForTokenClassification, pipeline
+import spacy
 
-# ✅ Hugging Face model (lightweight)
-MODEL_NAME = "dslim/bert-base-NER"
-CACHE_DIR = os.getenv("TRANSFORMERS_CACHE", "/tmp/cache")
-
-# Load tokenizer & model once
-tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME, cache_dir=CACHE_DIR)
-model = AutoModelForTokenClassification.from_pretrained(MODEL_NAME, cache_dir=CACHE_DIR)
-
-# Use CPU to avoid Render GPU OOM
-device = -1
-ner_pipeline = pipeline("ner", model=model, tokenizer=tokenizer, grouped_entities=True, device=device)
-
+# ---------- Load spaCy small model ----------
+nlp = spacy.load("en_core_web_sm")
 
 # ---------- Event Name Extraction from Subject ----------
 def clean_event_name(subject):
@@ -25,7 +14,12 @@ def clean_event_name(subject):
     subject = re.sub(r'^(re:|fwd:|\[.*?\])\s*', '', subject, flags=re.IGNORECASE)
     
     # Remove trailing date/time if present
-    subject = re.sub(r'\b(\d{1,2}(\s|-|/)\d{1,2}(\s|-|/)\d{2,4}|\d{1,2}:\d{2}(\s?(AM|PM))?)$', '', subject, flags=re.IGNORECASE)
+    subject = re.sub(
+        r'\b(\d{1,2}(\s|-|/)\d{1,2}(\s|-|/)\d{2,4}|\d{1,2}:\d{2}(\s?(AM|PM))?)$',
+        '',
+        subject,
+        flags=re.IGNORECASE
+    )
     
     # Remove excessive spaces
     subject = re.sub(r'\s+', ' ', subject).strip()
@@ -44,23 +38,40 @@ def extract_date_time(text):
     return dates[0] if dates else None, times[0] if times else None
 
 
-# ---------- Venue Extraction Using NER ----------
+# ---------- Venue Extraction Using spaCy + Regex ----------
+VENUE_KEYWORDS = [
+    "hall", "auditorium", "room", "centre", "center", "complex",
+    "stadium", "building", "block", "lab", "library", "theatre",
+    "theater", "gym", "campus", "conference room", "banquet"
+]
+
+VENUE_REGEX = re.compile(
+    r"\b(?:Hall|Room|Block|Building|Centre|Center|Auditorium|Stadium|Theatre|Theater|Lab|Library|Gym|Campus)"
+    r"(?:\s+\w+){0,3}",
+    re.IGNORECASE
+)
+
 def extract_venue(text):
-    ner_results = ner_pipeline(text)
-    for entity in ner_results:
-        if entity["entity_group"] in ["LOC", "ORG", "FAC"]:  # Possible venue labels
-            return entity["word"]
-    return None
+    venues = set()
+
+    # spaCy entity detection
+    doc = nlp(text)
+    for ent in doc.ents:
+        if ent.label_ in {"FAC", "ORG", "GPE", "LOC"}:
+            if any(kw in ent.text.lower() for kw in VENUE_KEYWORDS):
+                venues.add(ent.text.strip())
+
+    # Regex matching
+    for match in VENUE_REGEX.findall(text):
+        venues.add(match.strip())
+
+    return list(venues)[0] if venues else None
 
 
 # ---------- Main Extraction Function ----------
 def extract_event_details(subject, body):
     event_name = clean_event_name(subject)
-    
-    # Extract date/time from body
     date, time = extract_date_time(body)
-    
-    # Extract venue from body
     venue = extract_venue(body)
     
     return {
