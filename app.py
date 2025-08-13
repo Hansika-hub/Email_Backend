@@ -24,6 +24,11 @@ CORS(app, supports_credentials=True, origins=["https://email-mu-eight.vercel.app
 
 all_events = []
 
+# ✅ Health check endpoint for Render
+@app.route("/", methods=["GET"])
+def health_check():
+    return jsonify({"status": "healthy", "message": "Email Event Extractor API is running"}), 200
+
 # ✅ Optional: Block non-JSON POST requests
 @app.before_request
 def block_non_json_post():
