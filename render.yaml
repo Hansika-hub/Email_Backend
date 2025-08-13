@@ -4,8 +4,8 @@ services:
     runtime: python
     buildCommand: |
       apt-get update && \
-      apt-get install -y build-essential gcc libblas-dev liblapack-dev && \
-      pip install -r requirements.txt
+      apt-get install -y build-essential gcc g++ libblas-dev liblapack-dev libopenblas-dev && \
+      pip install --no-cache-dir --prefer-binary -r requirements.txt
     startCommand: python app.py
     envVars:
       - key: TRANSFORMERS_CACHE
