@@ -213,6 +213,19 @@ def extract_event_details(subject: Optional[str], body: Optional[str]) -> Dict[s
     }
 
 
+def count_event_fields(details: Dict[str, Optional[str]]) -> int:
+    present = 0
+    for key in ("date", "time", "venue"):
+        value = details.get(key)
+        if value and str(value).strip():
+            present += 1
+    return present
+
+
+def is_event_like(details: Dict[str, Optional[str]], minimum_required: int = 2) -> bool:
+    return count_event_fields(details) >= max(0, int(minimum_required))
+
+
 # ---------- Test ----------
 if __name__ == "__main__":
     subj = "Re: [Reminder] Climate Action 2025 - 19 Nov 2025 10:00 AM"
