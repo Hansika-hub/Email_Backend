@@ -11,3 +11,7 @@ services:
     envVars:
       - key: TRANSFORMERS_CACHE
         value: /tmp/cache
+      - key: PYTHONPATH
+        value: /opt/render/project/src
+      - key: SPACY_DISABLE_CUDA
+        value: "1"
