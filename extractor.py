@@ -3,6 +3,23 @@ import re
 import json
 from typing import Any, Dict, List, Optional, Tuple
 import requests
+import logging
+
+# Debug logging toggle
+DEBUG_NER = os.getenv("DEBUG_NER", "0") not in (None, "", "0", "false", "False")
+logger = logging.getLogger("ner")
+if DEBUG_NER:
+    logger.setLevel(logging.INFO)
+    if not logger.handlers:
+        _h = logging.StreamHandler()
+        _h.setLevel(logging.INFO)
+        _h.setFormatter(logging.Formatter("[NER] %(message)s"))
+        logger.addHandler(_h)
+    logger.propagate = False
+
+def _dlog(msg: str):
+    if DEBUG_NER:
+        logger.info(msg)
 
 # ---------- Event Name Extraction from Subject ----------
 def clean_event_name(subject):
@@ -28,8 +45,8 @@ def clean_event_name(subject):
 
 
 # ---------- Regex Date & Time Extraction (lightweight fallback) ----------
-DATE_REGEX = r"\b(?:\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*\s+\d{1,2}(?:,\s*\d{4})?)\b"
-TIME_REGEX = r"\b\d{1,2}:[0-5]\d\s?(?:AM|PM|am|pm)?\b"
+DATE_REGEX = r"\b(?:\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*\s+\d{1,2}(?:,\s*\d{2,4})?)\b"
+TIME_REGEX = r"\b(?:\d{1,2}:[0-5]\d|\d{1,2}\s?(?:AM|PM|am|pm))\b"
 
 def extract_date_time(text):
     dates = re.findall(DATE_REGEX, text)
@@ -62,7 +79,13 @@ def extract_venue(text: str) -> Optional[str]:
         l = line.strip()
         if len(l) < 200 and any(kw in l.lower() for kw in VENUE_KEYWORDS):
             candidates.append(l)
-    return candidates[0] if candidates else None
+    if candidates:
+        v = candidates[0]
+        v = re.sub(r"\bat\s+\d{1,2}(:[0-5]\d)?\s?(AM|PM|am|pm)\b", "", v)
+        v = re.sub(r"\b\d{1,2}(:[0-5]\d)?\s?(AM|PM|am|pm)\b", "", v)
+        v = v.strip(",;:- ")
+        return v or candidates[0]
+    return None
 
 
 # ---------- Hugging Face Inference API (primary) ----------
@@ -71,17 +94,27 @@ HF_API_URL = f"https://api-inference.huggingface.co/models/{HF_MODEL_ID}"
 
 def _call_hf_ner(text: str, timeout_seconds: int = 8) -> Optional[List[Dict[str, Any]]]:
     token = os.getenv("HUGGINGFACE_API_TOKEN") or os.getenv("HF_TOKEN")
-    if not token:
-        return None
     try:
-        headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
+        headers = {"Accept": "application/json"}
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+            _dlog("Calling HF Inference API with token")
+        else:
+            _dlog("Calling HF Inference API anonymously (no token)")
         payload = {"inputs": text, "options": {"wait_for_model": True}}
         resp = requests.post(HF_API_URL, headers=headers, json=payload, timeout=timeout_seconds)
+        _dlog(f"HF response status: {resp.status_code}")
         if resp.status_code != 200:
+            try:
+                err = resp.json()
+                _dlog(f"HF error body: {err}")
+            except Exception:
+                _dlog("HF error: non-JSON response")
             return None
         data = resp.json()
         # API can return a list or nested list depending on the pipeline; normalize to list
         if isinstance(data, dict) and data.get("error"):
+            _dlog(f"HF returned error: {data.get('error')}")
             return None
         if isinstance(data, list) and len(data) > 0 and isinstance(data[0], list):
             return data[0]
@@ -89,6 +122,7 @@ def _call_hf_ner(text: str, timeout_seconds: int = 8) -> Optional[List[Dict[str,
             return data
         return None
     except Exception:
+        _dlog("HF call raised exception; falling back")
         return None
 
 
@@ -155,10 +189,21 @@ def extract_event_details(subject: Optional[str], body: Optional[str]) -> Dict[s
         date = ner_fields.get("date")
         time = ner_fields.get("time")
         venue = ner_fields.get("venue")
+        _dlog(f"Using HF NER fields: date='{date}', time='{time}', venue='{venue}'")
     else:
         # Fallback: lightweight regex extractor
         date, time = extract_date_time(text)
         venue = extract_venue(text)
+        _dlog(f"Using regex fallback: date='{date}', time='{time}', venue='{venue}'")
+
+    # Light normalization of time strings
+    if time:
+        t = str(time).strip()
+        if re.fullmatch(r"\d{1,2}", t):
+            t = f"{t}:00"
+        t = t.upper().replace(".", "")
+        t = re.sub(r"\s+", " ", t)
+        time = t
 
     return {
         "event_name": event_name,
