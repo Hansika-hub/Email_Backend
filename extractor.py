@@ -54,7 +54,13 @@ def _configure_gemini() -> bool:
 def _call_gemini(subject: str, body: str) -> Optional[Dict[str, Optional[str]]]:
     if not _configure_gemini():
         return None
-    model = genai.GenerativeModel(GEMINI_MODEL)
+    model = genai.GenerativeModel(
+        GEMINI_MODEL,
+        generation_config={
+            "temperature": 0,
+            "response_mime_type": "application/json"
+        }
+    )
     system = (
         "Extract event details from the email. Use the subject as the event name. "
         "Return STRICT JSON object with exactly these keys: "
@@ -64,7 +70,7 @@ def _call_gemini(subject: str, body: str) -> Optional[Dict[str, Optional[str]]]:
     content = f"Subject: {subject}\n\nBody: {body[:5000]}"
     try:
         resp = model.generate_content([system, content])
-        txt = resp.text.strip()
+        txt = (resp.text or "").strip()
         # Strip code fences if present
         if txt.startswith("```"):
             txt = txt.strip("`\n ")
@@ -85,7 +91,10 @@ def _call_gemini(subject: str, body: str) -> Optional[Dict[str, Optional[str]]]:
             "venue": norm(data.get("venue")),
         }
     except Exception as e:
-        _dlog(f"Gemini generation failed: {e}")
+        try:
+            _dlog(f"Gemini generation failed: {e}; raw= {(resp.text if 'resp' in locals() else '')[:500]}")
+        except Exception:
+            _dlog(f"Gemini generation failed: {e}")
         return None
 
 
@@ -144,6 +153,16 @@ def count_event_fields(details: Dict[str, Optional[str]]) -> int:
 
 def is_event_like(details: Dict[str, Optional[str]], minimum_required: int = 2) -> bool:
     return count_event_fields(details) >= max(0, int(minimum_required))
+
+
+def count_all_fields(details: Dict[str, Optional[str]]) -> int:
+    present = 0
+    # Include event_name in count in addition to date/time/venue
+    for key in ("event_name", "date", "time", "venue"):
+        value = details.get(key)
+        if value and str(value).strip() and str(value).lower() != "na":
+            present += 1
+    return present
 
 
 def has_date_and_time(details: Dict[str, Optional[str]]) -> bool:
