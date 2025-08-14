@@ -230,4 +230,4 @@ def is_event_like(details: Dict[str, Optional[str]], minimum_required: int = 2) 
 if __name__ == "__main__":
     subj = "Re: [Reminder] Climate Action 2025 - 19 Nov 2025 10:00 AM"
     body = "Join us for the Climate Action 2025 conference on 19 Nov 2025 at 10:00 AM at Global Sustainability Center."
-    print(extract_event_details(subj, body))  
+    print(extract_event_details(subj, body))
