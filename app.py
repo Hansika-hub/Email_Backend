@@ -4,6 +4,7 @@ from extractor import extract_event_details, is_event_like, count_event_fields
 from flask_cors import CORS
 import os
 from db_utils import save_to_db
+import requests
 import logging
 import base64
 import re
@@ -131,12 +132,44 @@ def _extract_bearer_or_body_token():
         return auth_header.split(" ")[1]
     if request.is_json:
         body = request.get_json(silent=True) or {}
-        return body.get("accessToken") or body.get("token") or None
+        return body.get("accessToken") or body.get("access_token") or body.get("token") or None
     return None
+
+
+@app.route("/debug_token", methods=["GET", "POST", "OPTIONS"]) 
+def debug_token():
+    token = _extract_bearer_or_body_token()
+    if not token:
+        return jsonify({"error": "No token provided"}), 400
+
+    is_jwt = token.count(".") == 2
+    info = {"looks_like": "jwt_id_token" if is_jwt else "access_token"}
+
+    try:
+        if is_jwt:
+            resp = requests.get(
+                "https://oauth2.googleapis.com/tokeninfo",
+                params={"id_token": token},
+                timeout=6,
+            )
+            info["id_token_info"] = resp.json()
+        else:
+            resp = requests.get(
+                "https://oauth2.googleapis.com/tokeninfo",
+                params={"access_token": token},
+                timeout=6,
+            )
+            info["access_token_info"] = resp.json()
+    except Exception as e:
+        info["error"] = f"tokeninfo request failed: {e}"
+
+    return jsonify(info), 200
 
 
 @app.route("/fetch_emails", methods=["GET", "POST", "OPTIONS"])
 def fetch_emails():
+    if request.method == 'OPTIONS':
+        return jsonify({"ok": True}), 200
     access_token = _extract_bearer_or_body_token()
     if not access_token:
         return jsonify({
@@ -171,6 +204,8 @@ def fetch_emails():
 
 @app.route("/process_emails", methods=["GET", "POST", "OPTIONS"])
 def process_all_emails():
+    if request.method == 'OPTIONS':
+        return jsonify({"ok": True}), 200
     access_token = _extract_bearer_or_body_token()
     if not access_token:
         return jsonify({
