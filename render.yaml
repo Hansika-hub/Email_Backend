@@ -12,8 +12,6 @@ services:
       - key: PYTHONPATH
         value: /opt/render/project/src
       - key: HF_MODEL_ID
-        value: ""
+        value: Thiyaga158/Distilbert_Ner_Model_For_Email_Event_Extraction
       - key: HUGGINGFACE_API_TOKEN
-        value: ""
-      - key: GEMINI_API_KEY
         sync: false
