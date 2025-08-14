@@ -22,8 +22,17 @@ app.config.update(
     SESSION_COOKIE_SAMESITE='None'
 )
 
-# ✅ CORS config for Vercel
-CORS(app, supports_credentials=True, origins=["https://email-mu-eight.vercel.app"])
+"""CORS configuration
+- Allow the deployed frontend origin
+- Explicitly allow Authorization header and common methods for preflight success
+"""
+CORS(
+    app,
+    supports_credentials=True,
+    origins=["https://email-mu-eight.vercel.app"],
+    allow_headers=["Content-Type", "Authorization"],
+    methods=["GET", "POST", "OPTIONS"],
+)
 
 all_events = []
 # ---- Helpers to extract readable body text from Gmail payload ----
@@ -73,8 +82,15 @@ if os.getenv("DEBUG_NER", "0") not in (None, "", "0", "false", "False"):
 # ✅ Optional: Block non-JSON POST requests
 @app.before_request
 def block_non_json_post():
-    if request.method == 'POST' and not request.is_json:
+    # Allow POSTs without JSON for token-in-header endpoints
+    exempt_endpoints = {"fetch_emails", "process_all_emails", "cleanup"}
+    if request.method == 'POST' and not request.is_json and (request.endpoint not in exempt_endpoints):
         return jsonify({"error": "Only JSON POST requests allowed"}), 415
+
+
+@app.route("/", methods=["GET"]) 
+def health_check():
+    return jsonify({"status": "ok"}), 200
 
 
 @app.route("/", methods=["POST"])
@@ -97,7 +113,11 @@ def authenticate():
         return jsonify({
             "status": "authenticated",
             "user": idinfo["email"],
-            "accessToken": id_token_str
+            # Note: This is an ID token (OpenID Connect), NOT a Gmail OAuth access token
+            # Kept as 'accessToken' for backward compatibility with existing frontend code
+            "accessToken": id_token_str,
+            "idToken": id_token_str,
+            "tokenType": "id"
         }), 200
 
     except Exception as e:
@@ -105,13 +125,24 @@ def authenticate():
         return jsonify({"error": "Token verification failed"}), 400
 
 
-@app.route("/fetch_emails", methods=["GET"])
-def fetch_emails():
-    auth_header = request.headers.get("Authorization", "")
-    if not auth_header.startswith("Bearer "):
-        return jsonify({"error": "Unauthorized"}), 401
+def _extract_bearer_or_body_token():
+    auth_header = request.headers.get("Authorization", "") or ""
+    if auth_header.startswith("Bearer "):
+        return auth_header.split(" ")[1]
+    if request.is_json:
+        body = request.get_json(silent=True) or {}
+        return body.get("accessToken") or body.get("token") or None
+    return None
 
-    access_token = auth_header.split(" ")[1]
+
+@app.route("/fetch_emails", methods=["GET", "POST", "OPTIONS"])
+def fetch_emails():
+    access_token = _extract_bearer_or_body_token()
+    if not access_token:
+        return jsonify({
+            "error": "Missing access token",
+            "hint": "Send a Gmail OAuth access token via Authorization: Bearer <token> or JSON {accessToken}. An ID token will not work for Gmail API."
+        }), 401
 
     try:
         creds = Credentials(token=access_token)
@@ -133,15 +164,19 @@ def fetch_emails():
         return jsonify(email_list)
     except Exception as e:
         print("📡 Gmail API error:", str(e))
-        return jsonify({"error": "Failed to fetch emails from Gmail"}), 500
+        return jsonify({
+            "error": "Failed to fetch emails from Gmail",
+            "hint": "Ensure the provided token is a Gmail OAuth access token with gmail.readonly scope."
+        }), 401
 
-@app.route("/process_emails", methods=["GET"])
+@app.route("/process_emails", methods=["GET", "POST", "OPTIONS"])
 def process_all_emails():
-    auth_header = request.headers.get("Authorization", "")
-    if not auth_header.startswith("Bearer "):
-        return jsonify({"error": "Unauthorized"}), 401
-
-    access_token = auth_header.split(" ")[1]
+    access_token = _extract_bearer_or_body_token()
+    if not access_token:
+        return jsonify({
+            "error": "Missing access token",
+            "hint": "Send a Gmail OAuth access token via Authorization: Bearer <token> or JSON {accessToken}. An ID token will not work for Gmail API."
+        }), 401
 
     try:
         creds = Credentials(token=access_token)
@@ -189,7 +224,10 @@ def process_all_emails():
 
     except Exception as e:
         print("📡 Gmail API error:", str(e))
-        return jsonify({"error": "Failed to process emails"}), 500
+        return jsonify({
+            "error": "Failed to process emails",
+            "hint": "Ensure the provided token is a Gmail OAuth access token with gmail.readonly scope."
+        }), 401
 
 
 @app.route("/cleanup_reminders", methods=["POST"])
