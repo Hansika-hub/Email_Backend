@@ -1,4 +1,4 @@
- from flask import Flask, redirect, request, jsonify, session
+from flask import Flask, redirect, request, jsonify, session
 from gmail_utils import get_gmail_service
 from extractor import extract_event_details, is_event_like, count_event_fields
 from flask_cors import CORS
