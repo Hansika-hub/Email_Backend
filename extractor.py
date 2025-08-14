@@ -205,8 +205,10 @@ def extract_event_details(subject: Optional[str], body: Optional[str]) -> Dict[s
         t = re.sub(r"\s+", " ", t)
         time = t
 
+    # Include both 'event' (for DB) and 'event_name' (frontend compatibility)
     return {
         "event": event_name,
+        "event_name": event_name,
         "date": date,
         "time": time,
         "venue": venue
