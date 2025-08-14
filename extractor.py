@@ -206,7 +206,7 @@ def extract_event_details(subject: Optional[str], body: Optional[str]) -> Dict[s
         time = t
 
     return {
-        "event_name": event_name,
+        "event": event_name,
         "date": date,
         "time": time,
         "venue": venue
