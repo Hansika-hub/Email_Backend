@@ -293,25 +293,38 @@ def _aggregate_entities(entities: List[Dict[str, Any]]) -> Dict[str, str]:
     return fields
 
 
-# ---------- Main Extraction Function (rules-first; optional NER tertiary) ----------
+# ---------- Main Extraction Function (order toggled by env: LLM_FIRST) ----------
 def extract_event_details(subject: Optional[str], body: Optional[str]) -> Dict[str, Optional[str]]:
     raw = body or ""
     text = _clean_text(raw)
     event_name = clean_event_name(subject)
+    llm_first = os.getenv("LLM_FIRST", "false").lower() == "true"
 
-    # Rules-first: dateparser for date/time
-    date_str, time_str, anchor_idx = _pick_best_datetime(text)
-    # If date was found but time missing, search nearby lines explicitly
-    if date_str and not time_str:
-        nearby_time = _extract_time_near_anchor(text, anchor_idx)
-        if nearby_time:
-            time_str = nearby_time
-    venue_rule = extract_venue(text, anchor_line_index=anchor_idx)
-    source = "rules"
-    confidence = 0.85 if (date_str and time_str) else 0.6 if (date_str or time_str) else 0.4
+    date_str: Optional[str] = None
+    time_str: Optional[str] = None
+    venue_rule: Optional[str] = None
+    source = ""
+    confidence = 0.0
 
-    # If rules are weak (<2 fields), optionally try Gemini fallback behind env flag
-    if count_event_fields({"date": date_str, "time": time_str, "venue": venue_rule}) < 2 and os.getenv("LLM_FALLBACK_ENABLED", "false").lower() == "true":
+    def _apply_rules():
+        nonlocal date_str, time_str, venue_rule, source, confidence
+        d, t, anchor_idx = _pick_best_datetime(text)
+        # If date was found but time missing, search nearby lines explicitly
+        if d and not t:
+            near_t = _extract_time_near_anchor(text, anchor_idx)
+            if near_t:
+                t = near_t
+        v = extract_venue(text, anchor_line_index=anchor_idx)
+        date_str = date_str or d
+        time_str = time_str or t
+        venue_rule = venue_rule or v
+        source = "rules" if not source else f"{source}+rules"
+        confidence = max(confidence, 0.85 if (date_str and time_str) else 0.6 if (date_str or time_str) else 0.4)
+
+    def _apply_llm():
+        nonlocal date_str, time_str, venue_rule, source, confidence
+        if os.getenv("LLM_FALLBACK_ENABLED", "false").lower() != "true":
+            return
         try:
             from llm_fallback import extract_with_gemini
             llm = extract_with_gemini(subject or "", text)
@@ -319,21 +332,34 @@ def extract_event_details(subject: Optional[str], body: Optional[str]) -> Dict[s
                 date_str = date_str or llm.get("date")
                 time_str = time_str or llm.get("time")
                 venue_rule = venue_rule or llm.get("venue")
-                source = "rules+gemini"
+                source = "gemini" if not source else f"{source}+gemini"
                 confidence = max(confidence, 0.8)
         except Exception:
             pass
 
-    # If still weak, optionally try HF NER as tertiary (existing)
-    if count_event_fields({"date": date_str, "time": time_str, "venue": venue_rule}) < 2:
+    def _apply_ner():
+        nonlocal date_str, time_str, venue_rule, source, confidence
         ner_entities = _call_hf_ner(text)
         if ner_entities:
             ner_fields = _aggregate_entities(ner_entities)
             date_str = date_str or ner_fields.get("date")
             time_str = time_str or ner_fields.get("time")
             venue_rule = venue_rule or ner_fields.get("venue")
-            source = "rules+ner" if source == "rules" else f"{source}+ner"
+            source = "ner" if not source else f"{source}+ner"
             confidence = max(confidence, 0.7 if count_event_fields({"date": date_str, "time": time_str, "venue": venue_rule}) >= 2 else 0.5)
+
+    if llm_first:
+        _apply_llm()
+        if count_event_fields({"date": date_str, "time": time_str, "venue": venue_rule}) < 2:
+            _apply_rules()
+        if count_event_fields({"date": date_str, "time": time_str, "venue": venue_rule}) < 2:
+            _apply_ner()
+    else:
+        _apply_rules()
+        if count_event_fields({"date": date_str, "time": time_str, "venue": venue_rule}) < 2:
+            _apply_llm()
+        if count_event_fields({"date": date_str, "time": time_str, "venue": venue_rule}) < 2:
+            _apply_ner()
 
     # Light normalization of time strings in case text extraction produced variants
     if time_str:
