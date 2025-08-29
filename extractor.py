@@ -106,7 +106,8 @@ def _pick_best_datetime(text: str) -> Tuple[Optional[str], Optional[str], Option
 
     # Only consider time if the matched text appears to include a time token
     def _contains_time_token(s: str) -> bool:
-        return bool(re.search(r"(\d{1,2}:\d{2})|(\b\d{1,2}\s?(AM|PM)\b)", s, flags=re.IGNORECASE))
+        # Prefer explicit times like 12:30pm, 2pm, 14:00 (avoid day ordinals like 22nd)
+        return bool(re.search(r"\b\d{1,2}:\d{2}\s*(AM|PM)?\b|\b\d{1,2}\s*(AM|PM)\b", s, flags=re.IGNORECASE))
 
     time_str = None
     if _contains_time_token(best_text):
@@ -122,35 +123,47 @@ def _extract_time_near_anchor(text: str, anchor_line_index: Optional[int]) -> Op
         return None
     start = max(0, anchor_line_index - 3)
     end = min(len(lines), anchor_line_index + 4)
-    time_pattern = re.compile(r"\b(\d{1,2})(?::([0-5]\d))?\s*(AM|PM)?\b", re.IGNORECASE)
+    # 1) Strong preference: explicit am/pm times (with or without minutes)
+    ampm_time_pattern = re.compile(r"\b(\d{1,2})(?::([0-5]\d))?\s*(AM|PM)\b", re.IGNORECASE)
+    # 2) Next: 24h hh:mm
+    hhmm_pattern = re.compile(r"\b(\d{1,2}):([0-5]\d)\b")
     for i in range(start, end):
         line = lines[i]
         # skip lines that look like dates-only (e.g., 2025-08-29)
         if re.search(r"\d{4}-\d{2}-\d{2}", line):
             continue
-        m = time_pattern.search(line)
+        # Prefer the first am/pm match in the window
+        m = ampm_time_pattern.search(line)
         if m:
             hh = int(m.group(1))
             mm = int(m.group(2) or 0)
-            ampm = (m.group(3) or "").upper()
+            ampm = m.group(3).upper()
             if ampm == "PM" and hh < 12:
                 hh += 12
             if ampm == "AM" and hh == 12:
                 hh = 0
             return f"{hh:02d}:{mm:02d}"
+        # Otherwise, accept 24h hh:mm
+        m2 = hhmm_pattern.search(line)
+        if m2:
+            hh = int(m2.group(1))
+            mm = int(m2.group(2))
+            if 0 <= hh <= 23:
+                return f"{hh:02d}:{mm:02d}"
     # handle ranges like 4–6pm by finding the first time-like number with pm/am suffix elsewhere in line
-    range_pattern = re.compile(r"\b(\d{1,2})(?:[:][0-5]\d)?\s*[\-–—to]+\s*(\d{1,2})(?:[:][0-5]\d)?\s*(AM|PM)\b", re.IGNORECASE)
+    range_pattern = re.compile(r"\b(\d{1,2})(?::([0-5]\d))?\s*[\-–—to]+\s*(\d{1,2})(?::([0-5]\d))?\s*(AM|PM)\b", re.IGNORECASE)
     for i in range(start, end):
         line = lines[i]
         r = range_pattern.search(line)
         if r:
             hh = int(r.group(1))
-            ampm = r.group(3).upper()
+            mm = int(r.group(2) or 0)
+            ampm = r.group(5).upper()
             if ampm == "PM" and hh < 12:
                 hh += 12
             if ampm == "AM" and hh == 12:
                 hh = 0
-            return f"{hh:02d}:00"
+            return f"{hh:02d}:{mm:02d}"
     return None
 
 
