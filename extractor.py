@@ -2,6 +2,9 @@ import os
 import re
 import json
 from typing import Any, Dict, List, Optional, Tuple
+from bs4 import BeautifulSoup
+from dateparser.search import search_dates
+import datetime as _dt
 import requests
 import logging
 
@@ -44,14 +47,64 @@ def clean_event_name(subject):
     return subject.title()
 
 
-# ---------- Regex Date & Time Extraction (lightweight fallback) ----------
-DATE_REGEX = r"\b(?:\d{1,2}[/-]\d{1,2}[/-]\d{2,4}|(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*\s+\d{1,2}(?:,\s*\d{2,4})?)\b"
-TIME_REGEX = r"\b(?:\d{1,2}:[0-5]\d|\d{1,2}\s?(?:AM|PM|am|pm))\b"
+def _normalize_date(d: _dt.date) -> str:
+    return d.strftime("%Y-%m-%d")
 
-def extract_date_time(text):
-    dates = re.findall(DATE_REGEX, text)
-    times = re.findall(TIME_REGEX, text)
-    return dates[0] if dates else None, times[0] if times else None
+def _normalize_time(t: _dt.time) -> str:
+    return t.strftime("%H:%M")
+
+def _clean_text(html_or_text: Optional[str]) -> str:
+    if not html_or_text:
+        return ""
+    # If it looks like HTML, strip tags conservatively
+    txt = html_or_text
+    if "<" in txt and ">" in txt:
+        try:
+            soup = BeautifulSoup(txt, "html.parser")
+            txt = soup.get_text(" ")
+        except Exception:
+            pass
+    # Collapse whitespace
+    txt = re.sub(r"\s+", " ", txt).strip()
+    return txt
+
+def _pick_best_datetime(text: str) -> Tuple[Optional[str], Optional[str], Optional[int]]:
+    """Return (date_str, time_str, best_index) using dateparser.search_dates.
+    Picks the first plausible future occurrence if available; otherwise first occurrence.
+    best_index is the index in the tokenized lines for proximity heuristics.
+    """
+    if not text:
+        return None, None, None
+    # We'll also keep line indices to help venue proximity
+    lines = [l.strip() for l in text.splitlines() if l.strip()]
+    joined = "\n".join(lines)
+    try:
+        results = search_dates(joined, settings={
+            "RETURN_AS_TIMEZONE_AWARE": False,
+            "PREFER_DATES_FROM": "future",
+        }) or []
+    except Exception:
+        results = []
+
+    if not results:
+        return None, None, None
+
+    # Build candidates with positions by mapping match string to nearest line index
+    candidates: List[Tuple[_dt.datetime, int, str]] = []
+    for match_text, dt in results:
+        # Find a line that contains match_text
+        idx = next((i for i, l in enumerate(lines) if match_text in l), -1)
+        candidates.append((dt, idx, match_text))
+
+    # Prefer future datetimes, then first
+    now = _dt.datetime.now()
+    future = [c for c in candidates if c[0] >= now]
+    best = future[0] if future else candidates[0]
+    best_dt, best_idx, _ = best
+
+    date_str = _normalize_date(best_dt.date())
+    time_str = _normalize_time(best_dt.time()) if isinstance(best_dt, _dt.datetime) else None
+    return date_str, time_str, (best_idx if best_idx >= 0 else None)
 
 
 # ---------- Venue Extraction Using Regex (fallback) ----------
@@ -63,28 +116,44 @@ VENUE_KEYWORDS = [
 ]
 
 VENUE_REGEX = re.compile(
-    r"\b(?:Hall|Room|Block|Building|Centre|Center|Auditorium|Stadium|Theatre|Theater|Lab|Library|Gym|Campus|Park|Ground|Lawn)"
+    r"\b(?:Hall|Room|Block|Building|Centre|Center|Auditorium|Stadium|Theatre|Theater|Lab|Library|Gym|Campus|Park|Ground|Lawn|Conference Room|Seminar Hall)"
     r"(?:\s+[A-Za-z0-9&\-]+){0,5}",
     re.IGNORECASE
 )
 
-def extract_venue(text: str) -> Optional[str]:
+def extract_venue(text: str, anchor_line_index: Optional[int] = None) -> Optional[str]:
     candidates: List[str] = []
+    lines = [l.strip() for l in (text or "").splitlines() if l.strip()]
+    # 1) Explicit labels
+    label_prefixes = ("venue:", "where:", "location:", "address:")
+    for l in lines:
+        lower = l.lower()
+        if any(lower.startswith(p) for p in label_prefixes):
+            val = re.sub(r"^(venue:|where:|location:|address:)\s*", "", lower, flags=re.IGNORECASE)
+            candidates.append(val.strip())
+    # 2) Regex place-like
     for match in VENUE_REGEX.findall(text or ""):
         cleaned = match.strip()
         if cleaned:
             candidates.append(cleaned)
-    # Keyword-based simple scan
-    for line in (text or "").splitlines():
-        l = line.strip()
-        if len(l) < 200 and any(kw in l.lower() for kw in VENUE_KEYWORDS):
-            candidates.append(l)
-    if candidates:
-        v = candidates[0]
+    # 3) Proximity heuristic near date/time line
+    if anchor_line_index is not None and 0 <= anchor_line_index < len(lines):
+        start = max(0, anchor_line_index - 3)
+        end = min(len(lines), anchor_line_index + 4)
+        for l in lines[start:end]:
+            if any(kw in l.lower() for kw in VENUE_KEYWORDS):
+                candidates.append(l.strip())
+    # Post-clean
+    for i in range(len(candidates)):
+        v = candidates[i]
         v = re.sub(r"\bat\s+\d{1,2}(:[0-5]\d)?\s?(AM|PM|am|pm)\b", "", v)
         v = re.sub(r"\b\d{1,2}(:[0-5]\d)?\s?(AM|PM|am|pm)\b", "", v)
         v = v.strip(",;:- ")
-        return v or candidates[0]
+        candidates[i] = v
+    # Return the first reasonable candidate
+    for v in candidates:
+        if v and len(v) >= 2:
+            return v
     return None
 
 
@@ -177,42 +246,60 @@ def _aggregate_entities(entities: List[Dict[str, Any]]) -> Dict[str, str]:
     return fields
 
 
-# ---------- Main Extraction Function ----------
+# ---------- Main Extraction Function (rules-first; optional NER tertiary) ----------
 def extract_event_details(subject: Optional[str], body: Optional[str]) -> Dict[str, Optional[str]]:
-    text = (body or "").strip()
+    raw = body or ""
+    text = _clean_text(raw)
     event_name = clean_event_name(subject)
 
-    # Primary: Hugging Face Inference API NER
-    ner_entities = _call_hf_ner(text)
-    if ner_entities:
-        ner_fields = _aggregate_entities(ner_entities)
-        date = ner_fields.get("date")
-        time = ner_fields.get("time")
-        venue = ner_fields.get("venue")
-        _dlog(f"Using HF NER fields: date='{date}', time='{time}', venue='{venue}'")
-    else:
-        # Fallback: lightweight regex extractor
-        date, time = extract_date_time(text)
-        venue = extract_venue(text)
-        _dlog(f"Using regex fallback: date='{date}', time='{time}', venue='{venue}'")
+    # Rules-first: dateparser for date/time
+    date_str, time_str, anchor_idx = _pick_best_datetime(text)
+    venue_rule = extract_venue(text, anchor_line_index=anchor_idx)
+    source = "rules"
+    confidence = 0.85 if (date_str and time_str) else 0.6 if (date_str or time_str) else 0.4
 
-    # Light normalization of time strings
-    if time:
-        t = str(time).strip()
+    # If rules are weak (<2 fields), optionally try HF NER as tertiary
+    if count_event_fields({"date": date_str, "time": time_str, "venue": venue_rule}) < 2:
+        ner_entities = _call_hf_ner(text)
+        if ner_entities:
+            ner_fields = _aggregate_entities(ner_entities)
+            date_str = date_str or ner_fields.get("date")
+            time_str = time_str or ner_fields.get("time")
+            venue_rule = venue_rule or ner_fields.get("venue")
+            source = "rules+ner"
+            confidence = max(confidence, 0.7 if count_event_fields({"date": date_str, "time": time_str, "venue": venue_rule}) >= 2 else 0.5)
+
+    # Light normalization of time strings in case text extraction produced variants
+    if time_str:
+        t = str(time_str).strip()
         if re.fullmatch(r"\d{1,2}", t):
             t = f"{t}:00"
         t = t.upper().replace(".", "")
         t = re.sub(r"\s+", " ", t)
-        time = t
+        # Try to coerce to HH:MM
+        m = re.match(r"^(\d{1,2})(?::(\d{2}))?\s*(AM|PM)?$", t, flags=re.IGNORECASE)
+        if m:
+            hh = int(m.group(1))
+            mm = int(m.group(2) or 0)
+            ampm = (m.group(3) or "").upper()
+            if ampm == "PM" and hh < 12:
+                hh += 12
+            if ampm == "AM" and hh == 12:
+                hh = 0
+            time_str = f"{hh:02d}:{mm:02d}"
+        else:
+            time_str = t
 
-    # Include both 'event' (for DB) and 'event_name' (frontend compatibility)
-    return {
+    result: Dict[str, Optional[str]] = {
         "event": event_name,
         "event_name": event_name,
-        "date": date,
-        "time": time,
-        "venue": venue
+        "date": date_str,
+        "time": time_str,
+        "venue": venue_rule,
+        "source": source,
+        "confidence": confidence,
     }
+    return result
 
 
 def count_event_fields(details: Dict[str, Optional[str]]) -> int:
