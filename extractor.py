@@ -166,6 +166,43 @@ def _extract_time_near_anchor(text: str, anchor_line_index: Optional[int]) -> Op
             return f"{hh:02d}:{mm:02d}"
     return None
 
+def _extract_first_time_anywhere(text: str) -> Optional[str]:
+    lines = [l.strip() for l in text.splitlines() if l.strip()]
+    if not lines:
+        lines = [text]
+    ampm_time_pattern = re.compile(r"\b(\d{1,2})(?::([0-5]\d))?\s*(AM|PM)\b", re.IGNORECASE)
+    hhmm_pattern = re.compile(r"\b(\d{1,2}):([0-5]\d)\b")
+    for line in lines:
+        m = ampm_time_pattern.search(line)
+        if m:
+            hh = int(m.group(1))
+            mm = int(m.group(2) or 0)
+            ampm = m.group(3).upper()
+            if ampm == "PM" and hh < 12:
+                hh += 12
+            if ampm == "AM" and hh == 12:
+                hh = 0
+            return f"{hh:02d}:{mm:02d}"
+        m2 = hhmm_pattern.search(line)
+        if m2:
+            hh = int(m2.group(1))
+            mm = int(m2.group(2))
+            if 0 <= hh <= 23:
+                return f"{hh:02d}:{mm:02d}"
+    # ranges like 12:30pm - 2pm: pick the start
+    range_pattern = re.compile(r"\b(\d{1,2})(?::([0-5]\d))?\s*[\-–—to]+\s*(\d{1,2})(?::([0-5]\d))?\s*(AM|PM)\b", re.IGNORECASE)
+    m = range_pattern.search(text)
+    if m:
+        hh = int(m.group(1))
+        mm = int(m.group(2) or 0)
+        ampm = m.group(5).upper()
+        if ampm == "PM" and hh < 12:
+            hh += 12
+        if ampm == "AM" and hh == 12:
+            hh = 0
+        return f"{hh:02d}:{mm:02d}"
+    return None
+
 
 # ---------- Venue Extraction Using Regex (fallback) ----------
 VENUE_KEYWORDS = [
@@ -373,6 +410,12 @@ def extract_event_details(subject: Optional[str], body: Optional[str]) -> Dict[s
             _apply_llm()
         if count_event_fields({"date": date_str, "time": time_str, "venue": venue_rule}) < 2:
             _apply_ner()
+
+    # Final guard: if we have a date but still no time, try a whole-text time scan
+    if (date_str and not time_str):
+        any_time = _extract_first_time_anywhere(text)
+        if any_time:
+            time_str = any_time
 
     # Light normalization of time strings in case text extraction produced variants
     if time_str:
