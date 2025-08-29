@@ -68,128 +68,49 @@ def _clean_text(html_or_text: Optional[str]) -> str:
     txt = re.sub(r"\s+", " ", txt).strip()
     return txt
 
-def _pick_best_datetime(text: str) -> Tuple[Optional[str], Optional[str], Optional[int]]:
-    """Return (date_str, time_str, best_index) using dateparser.search_dates.
-    Picks the first plausible future occurrence if available; otherwise first occurrence.
-    best_index is the index in the tokenized lines for proximity heuristics.
-    """
+def _extract_date_and_time(text: str) -> Tuple[Optional[str], Optional[str], Optional[int]]:
+    """Extract date and time using a simple, reliable approach."""
     if not text:
         return None, None, None
-    # We'll also keep line indices to help venue proximity
+    
     lines = [l.strip() for l in text.splitlines() if l.strip()]
-    joined = "\n".join(lines)
+    
+    # Step 1: Find the best date using dateparser
     try:
-        results = search_dates(joined, settings={
+        results = search_dates(text, settings={
             "RETURN_AS_TIMEZONE_AWARE": False,
             "PREFER_DATES_FROM": "future",
         }) or []
     except Exception:
         results = []
-
+    
     if not results:
         return None, None, None
-
-    # Build candidates with positions by mapping match string to nearest line index
-    candidates: List[Tuple[_dt.datetime, int, str]] = []
-    for match_text, dt in results:
-        # Find a line that contains match_text
-        idx = next((i for i, l in enumerate(lines) if match_text in l), -1)
-        candidates.append((dt, idx, match_text))
-
-    # Prefer future datetimes, then first
+    
+    # Get the best date (prefer future, then first)
     now = _dt.datetime.now()
-    future = [c for c in candidates if c[0] >= now]
-    best = future[0] if future else candidates[0]
-    best_dt, best_idx, best_text = best
+    future_dates = [dt for _, dt in results if dt >= now]
+    best_date = future_dates[0] if future_dates else results[0][1]
+    date_str = _normalize_date(best_date.date())
+    
+    # Step 2: Find the best time in the entire text
+    time_str = _extract_best_time(text)
+    
+    # Step 3: Find the line index for venue proximity
+    anchor_idx = None
+    for i, line in enumerate(lines):
+        if any(match_text in line for match_text, _ in results):
+            anchor_idx = i
+            break
+    
+    return date_str, time_str, anchor_idx
 
-    date_str = _normalize_date(best_dt.date())
-
-    # Only consider time if the matched text appears to include a time token
-    def _contains_time_token(s: str) -> bool:
-        # Prefer explicit times like 12:30pm, 2pm, 14:00 (avoid day ordinals like 22nd)
-        return bool(re.search(r"\b\d{1,2}:\d{2}\s*(AM|PM)?\b|\b\d{1,2}\s*(AM|PM)\b", s, flags=re.IGNORECASE))
-
-    time_str = None
-    if _contains_time_token(best_text):
-        # Convert to 24h string
-        time_str = _normalize_time(best_dt.time())
-    return date_str, time_str, (best_idx if best_idx >= 0 else None)
-
-def _extract_time_near_anchor(text: str, anchor_line_index: Optional[int]) -> Optional[str]:
-    if anchor_line_index is None:
+def _extract_best_time(text: str) -> Optional[str]:
+    """Extract the best time from text using priority order."""
+    if not text:
         return None
-    lines = [l.strip() for l in text.splitlines() if l.strip()]
-    if not lines:
-        return None
-    start = max(0, anchor_line_index - 3)
-    end = min(len(lines), anchor_line_index + 4)
-    # 1) Strong preference: explicit am/pm times (with or without minutes)
-    ampm_time_pattern = re.compile(r"\b(\d{1,2})(?::([0-5]\d))?\s*(AM|PM)\b", re.IGNORECASE)
-    # 2) Next: 24h hh:mm
-    hhmm_pattern = re.compile(r"\b(\d{1,2}):([0-5]\d)\b")
-    for i in range(start, end):
-        line = lines[i]
-        # skip lines that look like dates-only (e.g., 2025-08-29)
-        if re.search(r"\d{4}-\d{2}-\d{2}", line):
-            continue
-        # Prefer the first am/pm match in the window
-        m = ampm_time_pattern.search(line)
-        if m:
-            hh = int(m.group(1))
-            mm = int(m.group(2) or 0)
-            ampm = m.group(3).upper()
-            if ampm == "PM" and hh < 12:
-                hh += 12
-            if ampm == "AM" and hh == 12:
-                hh = 0
-            return f"{hh:02d}:{mm:02d}"
-        # Otherwise, accept 24h hh:mm
-        m2 = hhmm_pattern.search(line)
-        if m2:
-            hh = int(m2.group(1))
-            mm = int(m2.group(2))
-            if 0 <= hh <= 23:
-                return f"{hh:02d}:{mm:02d}"
-    # handle ranges like 4–6pm by finding the first time-like number with pm/am suffix elsewhere in line
-    range_pattern = re.compile(r"\b(\d{1,2})(?::([0-5]\d))?\s*[\-–—to]+\s*(\d{1,2})(?::([0-5]\d))?\s*(AM|PM)\b", re.IGNORECASE)
-    for i in range(start, end):
-        line = lines[i]
-        r = range_pattern.search(line)
-        if r:
-            hh = int(r.group(1))
-            mm = int(r.group(2) or 0)
-            ampm = r.group(5).upper()
-            if ampm == "PM" and hh < 12:
-                hh += 12
-            if ampm == "AM" and hh == 12:
-                hh = 0
-            return f"{hh:02d}:{mm:02d}"
-    return None
-
-def _extract_first_time_anywhere(text: str) -> Optional[str]:
-    lines = [l.strip() for l in text.splitlines() if l.strip()]
-    if not lines:
-        lines = [text]
-    ampm_time_pattern = re.compile(r"\b(\d{1,2})(?::([0-5]\d))?\s*(AM|PM)\b", re.IGNORECASE)
-    hhmm_pattern = re.compile(r"\b(\d{1,2}):([0-5]\d)\b")
-    for line in lines:
-        m = ampm_time_pattern.search(line)
-        if m:
-            hh = int(m.group(1))
-            mm = int(m.group(2) or 0)
-            ampm = m.group(3).upper()
-            if ampm == "PM" and hh < 12:
-                hh += 12
-            if ampm == "AM" and hh == 12:
-                hh = 0
-            return f"{hh:02d}:{mm:02d}"
-        m2 = hhmm_pattern.search(line)
-        if m2:
-            hh = int(m2.group(1))
-            mm = int(m2.group(2))
-            if 0 <= hh <= 23:
-                return f"{hh:02d}:{mm:02d}"
-    # ranges like 12:30pm - 2pm: pick the start
+    
+    # Priority 1: Time ranges like "12:30pm - 2pm" (take start time)
     range_pattern = re.compile(r"\b(\d{1,2})(?::([0-5]\d))?\s*[\-–—to]+\s*(\d{1,2})(?::([0-5]\d))?\s*(AM|PM)\b", re.IGNORECASE)
     m = range_pattern.search(text)
     if m:
@@ -201,6 +122,29 @@ def _extract_first_time_anywhere(text: str) -> Optional[str]:
         if ampm == "AM" and hh == 12:
             hh = 0
         return f"{hh:02d}:{mm:02d}"
+    
+    # Priority 2: Explicit AM/PM times
+    ampm_pattern = re.compile(r"\b(\d{1,2})(?::([0-5]\d))?\s*(AM|PM)\b", re.IGNORECASE)
+    m = ampm_pattern.search(text)
+    if m:
+        hh = int(m.group(1))
+        mm = int(m.group(2) or 0)
+        ampm = m.group(3).upper()
+        if ampm == "PM" and hh < 12:
+            hh += 12
+        if ampm == "AM" and hh == 12:
+            hh = 0
+        return f"{hh:02d}:{mm:02d}"
+    
+    # Priority 3: 24-hour format
+    hhmm_pattern = re.compile(r"\b(\d{1,2}):([0-5]\d)\b")
+    m = hhmm_pattern.search(text)
+    if m:
+        hh = int(m.group(1))
+        mm = int(m.group(2))
+        if 0 <= hh <= 23:
+            return f"{hh:02d}:{mm:02d}"
+    
     return None
 
 
@@ -358,12 +302,7 @@ def extract_event_details(subject: Optional[str], body: Optional[str]) -> Dict[s
 
     def _apply_rules():
         nonlocal date_str, time_str, venue_rule, source, confidence
-        d, t, anchor_idx = _pick_best_datetime(text)
-        # If date was found but time missing, search nearby lines explicitly
-        if d and not t:
-            near_t = _extract_time_near_anchor(text, anchor_idx)
-            if near_t:
-                t = near_t
+        d, t, anchor_idx = _extract_date_and_time(text)
         v = extract_venue(text, anchor_line_index=anchor_idx)
         date_str = date_str or d
         time_str = time_str or t
@@ -411,32 +350,14 @@ def extract_event_details(subject: Optional[str], body: Optional[str]) -> Dict[s
         if count_event_fields({"date": date_str, "time": time_str, "venue": venue_rule}) < 2:
             _apply_ner()
 
-    # Final guard: if we have a date but still no time, try a whole-text time scan
-    if (date_str and not time_str):
-        any_time = _extract_first_time_anywhere(text)
-        if any_time:
-            time_str = any_time
-
-    # Light normalization of time strings in case text extraction produced variants
+    # Light normalization of time strings
     if time_str:
         t = str(time_str).strip()
         if re.fullmatch(r"\d{1,2}", t):
             t = f"{t}:00"
         t = t.upper().replace(".", "")
         t = re.sub(r"\s+", " ", t)
-        # Try to coerce to HH:MM
-        m = re.match(r"^(\d{1,2})(?::(\d{2}))?\s*(AM|PM)?$", t, flags=re.IGNORECASE)
-        if m:
-            hh = int(m.group(1))
-            mm = int(m.group(2) or 0)
-            ampm = (m.group(3) or "").upper()
-            if ampm == "PM" and hh < 12:
-                hh += 12
-            if ampm == "AM" and hh == 12:
-                hh = 0
-            time_str = f"{hh:02d}:{mm:02d}"
-        else:
-            time_str = t
+        time_str = t
 
     result: Dict[str, Optional[str]] = {
         "event": event_name,
