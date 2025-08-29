@@ -300,16 +300,22 @@ def process_all_emails():
                     extracted.append(PROCESSED_CACHE[cache_key])
                     continue
 
-                # ✅ Try ICS first
-                ics_data = _walk_parts_for_calendar(msg_detail.get("payload", {}))
+                # Pipeline order: if LLM_FIRST=true, try text first then ICS; else ICS first
                 result = {}
-                if ics_data:
-                    result = _extract_event_from_ics(ics_data)
-
-                # ✅ If no usable ICS, extract text (handles nested parts and HTML) and apply rules/NER
-                if not result or count_event_fields(result) < 2:
+                if os.getenv("LLM_FIRST", "false").lower() == "true":
                     body_data = _walk_parts_for_text(msg_detail.get("payload", {}))
                     result = extract_event_details(subject, body_data)
+                    if not result or count_event_fields(result) < 2:
+                        ics_data = _walk_parts_for_calendar(msg_detail.get("payload", {}))
+                        if ics_data:
+                            result = _extract_event_from_ics(ics_data)
+                else:
+                    ics_data = _walk_parts_for_calendar(msg_detail.get("payload", {}))
+                    if ics_data:
+                        result = _extract_event_from_ics(ics_data)
+                    if not result or count_event_fields(result) < 2:
+                        body_data = _walk_parts_for_text(msg_detail.get("payload", {}))
+                        result = extract_event_details(subject, body_data)
 
                 if is_event_like(result, minimum_required=2):
                     # If all three present, mark attendees = 1 (legacy behavior)
