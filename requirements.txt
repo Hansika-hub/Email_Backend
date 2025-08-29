@@ -7,3 +7,4 @@ google-auth-oauthlib
 dateparser
 beautifulsoup4
 icalendar
+google-generativeai
