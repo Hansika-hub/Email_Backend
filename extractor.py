@@ -258,7 +258,21 @@ def extract_event_details(subject: Optional[str], body: Optional[str]) -> Dict[s
     source = "rules"
     confidence = 0.85 if (date_str and time_str) else 0.6 if (date_str or time_str) else 0.4
 
-    # If rules are weak (<2 fields), optionally try HF NER as tertiary
+    # If rules are weak (<2 fields), optionally try Gemini fallback behind env flag
+    if count_event_fields({"date": date_str, "time": time_str, "venue": venue_rule}) < 2 and os.getenv("LLM_FALLBACK_ENABLED", "false").lower() == "true":
+        try:
+            from llm_fallback import extract_with_gemini
+            llm = extract_with_gemini(subject or "", text)
+            if llm:
+                date_str = date_str or llm.get("date")
+                time_str = time_str or llm.get("time")
+                venue_rule = venue_rule or llm.get("venue")
+                source = "rules+gemini"
+                confidence = max(confidence, 0.8)
+        except Exception:
+            pass
+
+    # If still weak, optionally try HF NER as tertiary (existing)
     if count_event_fields({"date": date_str, "time": time_str, "venue": venue_rule}) < 2:
         ner_entities = _call_hf_ner(text)
         if ner_entities:
@@ -266,7 +280,7 @@ def extract_event_details(subject: Optional[str], body: Optional[str]) -> Dict[s
             date_str = date_str or ner_fields.get("date")
             time_str = time_str or ner_fields.get("time")
             venue_rule = venue_rule or ner_fields.get("venue")
-            source = "rules+ner"
+            source = "rules+ner" if source == "rules" else f"{source}+ner"
             confidence = max(confidence, 0.7 if count_event_fields({"date": date_str, "time": time_str, "venue": venue_rule}) >= 2 else 0.5)
 
     # Light normalization of time strings in case text extraction produced variants
