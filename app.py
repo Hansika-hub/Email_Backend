@@ -12,6 +12,8 @@ from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from google.oauth2 import id_token
 from google.auth.transport import requests as google_requests
+from icalendar import Calendar
+from datetime import datetime
 
 app = Flask(__name__)
 app.secret_key = "super_secret"
@@ -36,6 +38,7 @@ CORS(
 )
 
 all_events = []
+PROCESSED_CACHE = {}
 # ---- Helpers to extract readable body text from Gmail payload ----
 def _decode_base64_to_text(data: str) -> str:
     try:
@@ -75,6 +78,61 @@ def _walk_parts_for_text(payload: dict) -> str:
     if payload.get("body", {}).get("data"):
         return _decode_base64_to_text(payload["body"]["data"]) or ""
     return ""
+
+def _walk_parts_for_calendar(payload: dict) -> str:
+    """Return raw ICS text if a text/calendar part is found."""
+    if not payload:
+        return ""
+    if payload.get("mimeType") == "text/calendar" and payload.get("body", {}).get("data"):
+        return _decode_base64_to_text(payload["body"]["data"]) or ""
+    for part in (payload.get("parts") or []):
+        data = _walk_parts_for_calendar(part)
+        if data:
+            return data
+    if payload.get("body", {}).get("data") and payload.get("mimeType", "").endswith("calendar"):
+        return _decode_base64_to_text(payload["body"]["data"]) or ""
+    return ""
+
+def _extract_event_from_ics(ics_text: str) -> dict:
+    """Parse ICS and return event fields if possible."""
+    try:
+        cal = Calendar.from_ical(ics_text)
+    except Exception:
+        return {}
+    summary = None
+    date_str = None
+    time_str = None
+    venue = None
+    for component in cal.walk():
+        if component.name == "VEVENT":
+            summary = str(component.get("summary")) if component.get("summary") else None
+            dtstart = component.get("dtstart")
+            location = component.get("location")
+            if dtstart:
+                try:
+                    val = dtstart.dt
+                    if isinstance(val, datetime):
+                        date_str = val.strftime("%Y-%m-%d")
+                        time_str = val.strftime("%H:%M")
+                    else:
+                        # date only
+                        date_str = val.strftime("%Y-%m-%d")
+                except Exception:
+                    pass
+            if location:
+                venue = str(location)
+            break
+    if any([summary, date_str, time_str, venue]):
+        return {
+            "event": summary,
+            "event_name": summary,
+            "date": date_str,
+            "time": time_str,
+            "venue": venue,
+            "source": "ics",
+            "confidence": 1.0 if date_str and (time_str or venue) else 0.9,
+        }
+    return {}
 
 # Optional logging configuration
 if os.getenv("DEBUG_NER", "0") not in (None, "", "0", "false", "False"):
@@ -236,16 +294,29 @@ def process_all_emails():
                     "No Subject"
                 )
 
-                # ✅ Extract Body text (handles nested parts and HTML)
-                body_data = _walk_parts_for_text(msg_detail.get("payload", {}))
+                # Caching by Gmail message id
+                cache_key = msg["id"]
+                if cache_key in PROCESSED_CACHE:
+                    extracted.append(PROCESSED_CACHE[cache_key])
+                    continue
 
-                # ✅ Call the extractor and gate by minimum fields
-                result = extract_event_details(subject, body_data)
+                # ✅ Try ICS first
+                ics_data = _walk_parts_for_calendar(msg_detail.get("payload", {}))
+                result = {}
+                if ics_data:
+                    result = _extract_event_from_ics(ics_data)
+
+                # ✅ If no usable ICS, extract text (handles nested parts and HTML) and apply rules/NER
+                if not result or count_event_fields(result) < 2:
+                    body_data = _walk_parts_for_text(msg_detail.get("payload", {}))
+                    result = extract_event_details(subject, body_data)
+
                 if is_event_like(result, minimum_required=2):
                     # If all three present, mark attendees = 1 (legacy behavior)
                     if count_event_fields(result) >= 3:
                         result["attendees"] = 1
                     extracted.append(result)
+                    PROCESSED_CACHE[cache_key] = result
                     save_to_db(result)
                 else:
                     print(f"ℹ️ Skipping email due to insufficient fields (need >=2). Subject='{subject}', details={result}")
