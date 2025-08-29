@@ -75,11 +75,13 @@ def _extract_date_and_time(text: str) -> Tuple[Optional[str], Optional[str], Opt
     
     lines = [l.strip() for l in text.splitlines() if l.strip()]
     
-    # Step 1: Find the best date using dateparser
+    # Step 1: Find the best date using dateparser with better settings
     try:
         results = search_dates(text, settings={
             "RETURN_AS_TIMEZONE_AWARE": False,
             "PREFER_DATES_FROM": "future",
+            "DATE_ORDER": "DMY",  # Handle DD.MM.YYYY format better
+            "PREFER_DAY_OF_MONTH": "first",
         }) or []
     except Exception:
         results = []
@@ -187,13 +189,17 @@ def extract_venue(text: str, anchor_line_index: Optional[int] = None) -> Optiona
     # Post-clean
     for i in range(len(candidates)):
         v = candidates[i]
+        # Remove date/time patterns more aggressively
+        v = re.sub(r"\b\d{1,2}[./-]\d{1,2}[./-]\d{2,4}\b", "", v)  # Remove dates like 27.09.2025
         v = re.sub(r"\bat\s+\d{1,2}(:[0-5]\d)?\s?(AM|PM|am|pm)\b", "", v)
         v = re.sub(r"\b\d{1,2}(:[0-5]\d)?\s?(AM|PM|am|pm)\b", "", v)
+        v = re.sub(r"\bon\s+\d{1,2}[./-]\d{1,2}[./-]\d{2,4}\b", "", v)  # Remove "on 27.09.2025"
+        v = re.sub(r"\b\d{1,2}[./-]\d{1,2}[./-]\d{2,4}\b", "", v)  # Remove any remaining dates
         v = v.strip(",;:- ")
         candidates[i] = v
     # Return the first reasonable candidate
     for v in candidates:
-        if v and len(v) >= 2:
+        if v and len(v) >= 2 and not re.search(r"\d{1,2}[./-]\d{1,2}", v):  # Final check: no date patterns
             return v
     return None
 
