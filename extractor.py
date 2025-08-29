@@ -100,11 +100,58 @@ def _pick_best_datetime(text: str) -> Tuple[Optional[str], Optional[str], Option
     now = _dt.datetime.now()
     future = [c for c in candidates if c[0] >= now]
     best = future[0] if future else candidates[0]
-    best_dt, best_idx, _ = best
+    best_dt, best_idx, best_text = best
 
     date_str = _normalize_date(best_dt.date())
-    time_str = _normalize_time(best_dt.time()) if isinstance(best_dt, _dt.datetime) else None
+
+    # Only consider time if the matched text appears to include a time token
+    def _contains_time_token(s: str) -> bool:
+        return bool(re.search(r"(\d{1,2}:\d{2})|(\b\d{1,2}\s?(AM|PM)\b)", s, flags=re.IGNORECASE))
+
+    time_str = None
+    if _contains_time_token(best_text):
+        # Convert to 24h string
+        time_str = _normalize_time(best_dt.time())
     return date_str, time_str, (best_idx if best_idx >= 0 else None)
+
+def _extract_time_near_anchor(text: str, anchor_line_index: Optional[int]) -> Optional[str]:
+    if anchor_line_index is None:
+        return None
+    lines = [l.strip() for l in text.splitlines() if l.strip()]
+    if not lines:
+        return None
+    start = max(0, anchor_line_index - 3)
+    end = min(len(lines), anchor_line_index + 4)
+    time_pattern = re.compile(r"\b(\d{1,2})(?::([0-5]\d))?\s*(AM|PM)?\b", re.IGNORECASE)
+    for i in range(start, end):
+        line = lines[i]
+        # skip lines that look like dates-only (e.g., 2025-08-29)
+        if re.search(r"\d{4}-\d{2}-\d{2}", line):
+            continue
+        m = time_pattern.search(line)
+        if m:
+            hh = int(m.group(1))
+            mm = int(m.group(2) or 0)
+            ampm = (m.group(3) or "").upper()
+            if ampm == "PM" and hh < 12:
+                hh += 12
+            if ampm == "AM" and hh == 12:
+                hh = 0
+            return f"{hh:02d}:{mm:02d}"
+    # handle ranges like 4–6pm by finding the first time-like number with pm/am suffix elsewhere in line
+    range_pattern = re.compile(r"\b(\d{1,2})(?:[:][0-5]\d)?\s*[\-–—to]+\s*(\d{1,2})(?:[:][0-5]\d)?\s*(AM|PM)\b", re.IGNORECASE)
+    for i in range(start, end):
+        line = lines[i]
+        r = range_pattern.search(line)
+        if r:
+            hh = int(r.group(1))
+            ampm = r.group(3).upper()
+            if ampm == "PM" and hh < 12:
+                hh += 12
+            if ampm == "AM" and hh == 12:
+                hh = 0
+            return f"{hh:02d}:00"
+    return None
 
 
 # ---------- Venue Extraction Using Regex (fallback) ----------
@@ -254,6 +301,11 @@ def extract_event_details(subject: Optional[str], body: Optional[str]) -> Dict[s
 
     # Rules-first: dateparser for date/time
     date_str, time_str, anchor_idx = _pick_best_datetime(text)
+    # If date was found but time missing, search nearby lines explicitly
+    if date_str and not time_str:
+        nearby_time = _extract_time_near_anchor(text, anchor_idx)
+        if nearby_time:
+            time_str = nearby_time
     venue_rule = extract_venue(text, anchor_line_index=anchor_idx)
     source = "rules"
     confidence = 0.85 if (date_str and time_str) else 0.6 if (date_str or time_str) else 0.4
